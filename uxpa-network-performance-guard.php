@@ -32,6 +32,9 @@ class UxpaNetworkPerformanceGuard {
         // 3. Register settings page
         add_action( 'admin_menu', [ $this, 'register_admin_settings_page' ] );
         add_action( 'network_admin_menu', [ $this, 'register_network_settings_page' ] );
+
+        // 4. Action Scheduler optimizations
+        add_filter( 'action_scheduler_retention_period', [ $this, 'set_action_scheduler_retention' ] );
     }
 
     private function check_activation_context(): void {
@@ -117,6 +120,10 @@ class UxpaNetworkPerformanceGuard {
         // Update a simple counter
         $count = (int) $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
         $this->update_guard_option( 'uxpa_network_guard_blocked_count', $count + 1 );
+    }
+
+    public function set_action_scheduler_retention(): int {
+        return DAY_IN_SECONDS * 7; // Keeps logs for 7 days instead of 30
     }
 
     public function clean_cron_option_on_update( $new_value ) {
@@ -205,6 +212,18 @@ class UxpaNetworkPerformanceGuard {
             $this->update_guard_option( self::LOGS_KEY, [] );
             $this->update_guard_option( 'uxpa_network_guard_blocked_count', 0 );
             echo '<div class="notice notice-info is-dismissible"><p><strong>Interception counters and logs cleared.</strong></p></div>';
+        }
+
+        // Process Action Scheduler Manual Purge
+        if ( isset( $_POST['uxpa_guard_purge_action_scheduler'] ) ) {
+            check_admin_referer( 'uxpa_guard_settings_nonce' );
+            if ( class_exists( 'ActionScheduler_QueueCleaner' ) ) {
+                $cleaner = new ActionScheduler_QueueCleaner();
+                $cleaner->delete_old_actions();
+                echo '<div class="notice notice-success is-dismissible"><p><strong>Action Scheduler logs pruned successfully.</strong></p></div>';
+            } else {
+                echo '<div class="notice notice-error is-dismissible"><p><strong>Action Scheduler cleaner class not found.</strong></p></div>';
+            }
         }
         ?>
 
@@ -440,6 +459,15 @@ class UxpaNetworkPerformanceGuard {
                 <?php endif; ?>
             </tbody>
         </table>
+
+        <div style="margin-bottom: 30px; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+            <h3>Action Scheduler Maintenance</h3>
+            <p class="description" style="margin-bottom: 15px;">The system automatically retains Action Scheduler action logs for <strong>7 days</strong> (reduced from the default 30 days). You can force an immediate database queue cleanup below.</p>
+            <form method="post" style="display: inline;">
+                <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
+                <input type="submit" name="uxpa_guard_purge_action_scheduler" class="button button-secondary" value="Purge Old Action Logs Now" />
+            </form>
+        </div>
 
         <form method="post">
             <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
