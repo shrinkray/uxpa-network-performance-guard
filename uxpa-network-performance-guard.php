@@ -80,6 +80,7 @@ class UxpaNetworkPerformanceGuard {
             'ip'        => $ip,
             'type'      => $type,
             'target'    => sanitize_text_field( $target ),
+            'blog_id'   => get_current_blog_id(),
         ];
 
         array_unshift( $logs, $new_entry );
@@ -224,8 +225,11 @@ class UxpaNetworkPerformanceGuard {
         <table class="wp-list-table widefat fixed striped">
             <thead>
                 <tr>
-                    <th style="width: 20%;">Time</th>
-                    <th style="width: 20%;">IP Address</th>
+                    <th style="width: 18%;">Time</th>
+                    <?php if ( is_multisite() ) : ?>
+                        <th style="width: 15%;">Sub-Site</th>
+                    <?php endif; ?>
+                    <th style="width: 18%;">IP Address</th>
                     <th style="width: 15%;">Block Type</th>
                     <th>Target Query / Route</th>
                 </tr>
@@ -233,16 +237,25 @@ class UxpaNetworkPerformanceGuard {
             <tbody>
                 <?php if ( empty( $recent_logs ) ) : ?>
                     <tr>
-                        <td colspan="4">No blocked harvesting attempts recorded yet.</td>
+                        <td colspan="<?php echo is_multisite() ? 5 : 4; ?>">No blocked harvesting attempts recorded yet.</td>
                     </tr>
                 <?php else : ?>
                     <?php foreach ( $recent_logs as $entry ) : ?>
                         <tr>
                             <td><?php echo esc_html( date_i18n( 'Y-m-d H:i:s', $entry['timestamp'] ) ); ?></td>
+                            <?php if ( is_multisite() ) : ?>
+                                <td>
+                                    <?php 
+                                    $blog_id = $entry['blog_id'] ?? 1;
+                                    $details = get_blog_details( $blog_id );
+                                    echo esc_html( $details ? $details->blogname : "Site #{$blog_id}" );
+                                    ?>
+                                </td>
+                            <?php endif; ?>
                             <td><code><?php echo esc_html( $entry['ip'] ); ?></code></td>
                             <td>
                                 <span class="badge" style="background: #f0f0f1; border: 1px solid #c3c4c7; padding: 2px 6px; border-radius: 3px; font-size: 11px;">
-                                    <?php echo $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter'; ?>
+                                    <?php echo ( isset( $entry['type'] ) && $entry['type'] === 'rest' ) ? 'REST API' : 'Query Parameter'; ?>
                                 </span>
                             </td>
                             <td><code><?php echo esc_html( $entry['target'] ); ?></code></td>
@@ -293,7 +306,17 @@ class UxpaNetworkPerformanceGuard {
     }
 
     private function render_cron_tab(): void {
-        // Fetch raw cron data
+        // Handle target blog selection in Multisite
+        $target_blog_id = get_current_blog_id();
+        if ( is_multisite() && isset( $_GET['cron_blog_id'] ) ) {
+            $target_blog_id = (int) $_GET['cron_blog_id'];
+        }
+
+        if ( is_multisite() ) {
+            switch_to_blog( $target_blog_id );
+        }
+
+        // Fetch raw cron data for the target blog
         $cron_option = get_option( 'cron', [] );
         $cron_serialized = maybe_serialize( $cron_option );
         $cron_size = strlen( $cron_serialized );
@@ -316,7 +339,37 @@ class UxpaNetworkPerformanceGuard {
         }
         arsort( $hook_frequencies );
         $top_hooks = array_slice( $hook_frequencies, 0, 5 );
+
+        if ( is_multisite() ) {
+            restore_current_blog();
+        }
         ?>
+
+        <?php if ( is_multisite() ) : ?>
+            <div style="margin-bottom: 20px; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+                <form method="get" action="">
+                    <input type="hidden" name="page" value="uxpa-performance-guard" />
+                    <input type="hidden" name="tab" value="cron" />
+                    <label for="cron_blog_id"><strong>Select Sub-Site to Inspect:</strong></label>
+                    <select name="cron_blog_id" id="cron_blog_id" onchange="this.form.submit()">
+                        <?php
+                        $sites = get_sites( [ 'number' => 100 ] );
+                        foreach ( $sites as $site ) {
+                            $details = get_blog_details( $site->blog_id );
+                            printf(
+                                '<option value="%d" %s>%s (ID: %d)</option>',
+                                (int) $site->blog_id,
+                                selected( $target_blog_id, $site->blog_id, false ),
+                                esc_html( $details ? $details->blogname : $site->domain ),
+                                (int) $site->blog_id
+                            );
+                        }
+                        ?>
+                    </select>
+                </form>
+            </div>
+        <?php endif; ?>
+
         <div style="display: flex; gap: 20px; margin-bottom: 20px;">
             <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
                 <h3>Cron Option Size</h3>
