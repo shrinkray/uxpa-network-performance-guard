@@ -2,10 +2,11 @@
 /**
  * Plugin Name: UXPA Network Performance & Guard
  * Description: Intercepts user enumeration attempts early and prevents cron option data pollution.
- * Version: 1.3
+ * Version: 1.4
  * Author: Greg Miller for UXPA International
  * Author URI: https://shrinkraylabs.com
  * Text Domain: uxpa-network-performance-guard
+ * Network: true
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -35,6 +36,11 @@ class UxpaNetworkPerformanceGuard {
 
         // 4. Action Scheduler optimizations
         add_filter( 'action_scheduler_retention_period', [ $this, 'set_action_scheduler_retention' ] );
+
+        // 5. Reporting and Cron schedules
+        add_filter( 'cron_schedules', [ $this, 'register_custom_cron_intervals' ] );
+        add_action( 'uxpa_guard_send_scheduled_report', [ $this, 'send_scheduled_report' ] );
+        add_action( 'admin_init', [ $this, 'handle_csv_export' ] );
     }
 
     private function check_activation_context(): void {
@@ -63,6 +69,22 @@ class UxpaNetworkPerformanceGuard {
         }
     }
 
+    public function register_custom_cron_intervals( $schedules ) {
+        if ( ! isset( $schedules['weekly'] ) ) {
+            $schedules['weekly'] = [
+                'interval' => WEEK_IN_SECONDS,
+                'display'  => __( 'Once Weekly', 'uxpa-network-performance-guard' ),
+            ];
+        }
+        if ( ! isset( $schedules['monthly'] ) ) {
+            $schedules['monthly'] = [
+                'interval' => DAY_IN_SECONDS * 30,
+                'display'  => __( 'Once Monthly', 'uxpa-network-performance-guard' ),
+            ];
+        }
+        return $schedules;
+    }
+
     private function load_settings(): void {
         $stored = $this->get_guard_option( self::SETTINGS_KEY, [] );
         if ( ! is_array( $stored ) ) {
@@ -70,9 +92,11 @@ class UxpaNetworkPerformanceGuard {
         }
 
         $this->settings = [
-            'block_author'   => isset( $stored['block_author'] ) ? (bool) $stored['block_author'] : true,
-            'block_rest'     => isset( $stored['block_rest'] ) ? (bool) $stored['block_rest'] : true,
-            'cron_threshold' => isset( $stored['cron_threshold'] ) ? (int) $stored['cron_threshold'] : 5,
+            'block_author'        => isset( $stored['block_author'] ) ? (bool) $stored['block_author'] : true,
+            'block_rest'          => isset( $stored['block_rest'] ) ? (bool) $stored['block_rest'] : true,
+            'cron_threshold'      => isset( $stored['cron_threshold'] ) ? (int) $stored['cron_threshold'] : 5,
+            'report_admin_user'   => isset( $stored['report_admin_user'] ) ? sanitize_text_field( $stored['report_admin_user'] ) : '',
+            'report_interval'     => isset( $stored['report_interval'] ) ? sanitize_text_field( $stored['report_interval'] ) : 'disabled',
         ];
     }
 
@@ -114,12 +138,28 @@ class UxpaNetworkPerformanceGuard {
         ];
 
         array_unshift( $logs, $new_entry );
-        $logs = array_slice( $logs, 0, 10 ); // Keep only latest 10
+        $logs = array_slice( $logs, 0, 50 ); // Store up to 50 logs for reporting
         $this->update_guard_option( self::LOGS_KEY, $logs );
         
         // Update a simple counter
         $count = (int) $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
         $this->update_guard_option( 'uxpa_network_guard_blocked_count', $count + 1 );
+
+        // Track daily stats
+        $daily_stats = $this->get_guard_option( 'uxpa_network_guard_daily_stats', [] );
+        if ( ! is_array( $daily_stats ) ) {
+            $daily_stats = [];
+        }
+        $today = date( 'Y-m-d' );
+        if ( ! isset( $daily_stats[ $today ] ) ) {
+            $daily_stats[ $today ] = 0;
+        }
+        $daily_stats[ $today ]++;
+
+        // Prune daily stats older than 30 entries
+        krsort( $daily_stats );
+        $daily_stats = array_slice( $daily_stats, 0, 30, true );
+        $this->update_guard_option( 'uxpa_network_guard_daily_stats', $daily_stats );
     }
 
     public function set_action_scheduler_retention(): int {
@@ -183,6 +223,177 @@ class UxpaNetworkPerformanceGuard {
         );
     }
 
+    public function handle_csv_export(): void {
+        if ( ! isset( $_GET['action'] ) || $_GET['action'] !== 'uxpa_export_csv' ) {
+            return;
+        }
+
+        if ( ! isset( $_GET['_wpnonce'] ) || ! wp_verify_nonce( $_GET['_wpnonce'], 'uxpa_export_csv_nonce' ) ) {
+            wp_die( 'Security check failed.' );
+        }
+
+        $can_manage = $this->is_network_active ? current_user_can( 'manage_network_options' ) : current_user_can( 'manage_options' );
+        if ( ! $can_manage ) {
+            wp_die( 'Permission denied.' );
+        }
+
+        $logs = $this->get_guard_option( self::LOGS_KEY, [] );
+
+        header( 'Content-Type: text/csv; charset=utf-8' );
+        header( 'Content-Disposition: attachment; filename="uxpa-security-intercept-report-' . date( 'Y-m-d' ) . '.csv"' );
+        
+        $output = fopen( 'php://output', 'w' );
+        
+        $headers = [ 'Time', 'IP Address', 'Block Type', 'Target Route / Query' ];
+        if ( is_multisite() ) {
+            array_splice( $headers, 1, 0, 'Sub-Site' );
+        }
+        fputcsv( $output, $headers );
+
+        foreach ( $logs as $entry ) {
+            $row = [
+                date( 'Y-m-d H:i:s', $entry['timestamp'] ),
+                $entry['ip'],
+                $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter',
+                $entry['target']
+            ];
+            if ( is_multisite() ) {
+                $blog_id = $entry['blog_id'] ?? 1;
+                $details = get_blog_details( $blog_id );
+                $sub_site = $details ? $details->blogname : "Site #{$blog_id}";
+                array_splice( $row, 1, 0, $sub_site );
+            }
+            fputcsv( $output, $row );
+        }
+
+        fclose( $output );
+        exit;
+    }
+
+    private function reschedule_report_cron( string $interval ): void {
+        wp_clear_scheduled_hook( 'uxpa_guard_send_scheduled_report' );
+        if ( $interval !== 'disabled' ) {
+            wp_schedule_event( time() + 30, $interval, 'uxpa_guard_send_scheduled_report' );
+        }
+    }
+
+    public function send_scheduled_report(): void {
+        $stored = $this->get_guard_option( self::SETTINGS_KEY, [] );
+        $username = isset( $stored['report_admin_user'] ) ? $stored['report_admin_user'] : '';
+        
+        if ( empty( $username ) ) {
+            return;
+        }
+
+        $user = get_user_by( 'login', $username );
+        if ( ! $user ) {
+            return;
+        }
+
+        $to = $user->user_email;
+        $subject = '[' . get_option( 'blogname' ) . '] UXPA Security & Performance Guard Report';
+
+        $total_intercepted = (int) $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
+        
+        $daily_stats = $this->get_guard_option( 'uxpa_network_guard_daily_stats', [] );
+        $seven_days_total = 0;
+        $thirty_days_total = 0;
+        $idx = 0;
+        if ( is_array( $daily_stats ) ) {
+            foreach ( $daily_stats as $date => $count ) {
+                if ( $idx < 7 ) {
+                    $seven_days_total += $count;
+                }
+                if ( $idx < 30 ) {
+                    $thirty_days_total += $count;
+                }
+                $idx++;
+            }
+        }
+
+        $logs = $this->get_guard_option( self::LOGS_KEY, [] );
+        $logs_html = '';
+        if ( empty( $logs ) ) {
+            $logs_html = '<p>No security blocks logged recently.</p>';
+        } else {
+            $logs_html .= '<table style="width: 100%; border-collapse: collapse; margin-top: 10px;">';
+            $logs_html .= '<thead><tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">';
+            $logs_html .= '<th style="padding: 8px; text-align: left; border: 1px solid #dee2e6;">Time</th>';
+            if ( is_multisite() ) {
+                $logs_html .= '<th style="padding: 8px; text-align: left; border: 1px solid #dee2e6;">Sub-Site</th>';
+            }
+            $logs_html .= '<th style="padding: 8px; text-align: left; border: 1px solid #dee2e6;">IP Address</th>';
+            $logs_html .= '<th style="padding: 8px; text-align: left; border: 1px solid #dee2e6;">Block Type</th>';
+            $logs_html .= '<th style="padding: 8px; text-align: left; border: 1px solid #dee2e6;">Target Route / Query</th>';
+            $logs_html .= '</tr></thead><tbody>';
+            
+            $display_logs = array_slice( $logs, 0, 15 );
+            foreach ( $display_logs as $entry ) {
+                $time = date( 'Y-m-d H:i:s', $entry['timestamp'] );
+                $ip = esc_html( $entry['ip'] );
+                $type = $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter';
+                $target = esc_html( $entry['target'] );
+                
+                $logs_html .= '<tr style="border-bottom: 1px solid #dee2e6;">';
+                $logs_html .= '<td style="padding: 8px; border: 1px solid #dee2e6;">' . $time . '</td>';
+                if ( is_multisite() ) {
+                    $blog_id = $entry['blog_id'] ?? 1;
+                    $details = get_blog_details( $blog_id );
+                    $sub_site = $details ? $details->blogname : "Site #{$blog_id}";
+                    $logs_html .= '<td style="padding: 8px; border: 1px solid #dee2e6;">' . esc_html( $sub_site ) . '</td>';
+                }
+                $logs_html .= '<td style="padding: 8px; border: 1px solid #dee2e6;"><code>' . $ip . '</code></td>';
+                $logs_html .= '<td style="padding: 8px; border: 1px solid #dee2e6;">' . $type . '</td>';
+                $logs_html .= '<td style="padding: 8px; border: 1px solid #dee2e6;"><code>' . $target . '</code></td>';
+                $logs_html .= '</tr>';
+            }
+            $logs_html .= '</tbody></table>';
+        }
+
+        $cron_option = get_option( 'cron', [] );
+        $cron_serialized = maybe_serialize( $cron_option );
+        $cron_size = strlen( $cron_serialized );
+        $formatted_cron_size = size_format( $cron_size, 2 );
+
+        $body = '
+        <html>
+        <head>
+            <title>Security and Performance Guard Report</title>
+        </head>
+        <body style="font-family: Arial, sans-serif; color: #333333; line-height: 1.6;">
+            <div style="max-width: 700px; margin: 0 auto; padding: 20px; border: 1px solid #e9ecef; border-radius: 5px;">
+                <h1 style="color: #0073aa; border-bottom: 2px solid #0073aa; padding-bottom: 10px;">UXPA Security & Performance Guard Report</h1>
+                
+                <p>Hello ' . esc_html( $user->display_name ) . ',</p>
+                <p>This is your automated security and performance summary for <strong>' . esc_html( get_option( 'blogname' ) ) . '</strong>.</p>
+                
+                <h2 style="color: #495057; margin-top: 30px;">🛡️ Security Statistics</h2>
+                <ul style="list-style-type: none; padding-left: 0;">
+                    <li style="margin-bottom: 10px;"><strong>Total Blocked Attempts (Cumulative):</strong> <span style="font-size: 16px; font-weight: bold; color: #d63638;">' . number_format_i18n( $total_intercepted ) . '</span></li>
+                    <li style="margin-bottom: 10px;"><strong>Blocked in Last 7 Days:</strong> <span style="font-size: 16px; font-weight: bold; color: #d63638;">' . number_format_i18n( $seven_days_total ) . '</span></li>
+                    <li style="margin-bottom: 10px;"><strong>Blocked in Last 30 Days:</strong> <span style="font-size: 16px; font-weight: bold; color: #d63638;">' . number_format_i18n( $thirty_days_total ) . '</span></li>
+                </ul>
+
+                <h2 style="color: #495057; margin-top: 30px;">⚡ Cron Database Health</h2>
+                <ul style="list-style-type: none; padding-left: 0;">
+                    <li style="margin-bottom: 10px;"><strong>Cron Option Storage Size:</strong> ' . esc_html( $formatted_cron_size ) . '</li>
+                </ul>
+
+                <h2 style="color: #495057; margin-top: 30px;">📋 Recent Blocked Attempts (Latest 15)</h2>
+                ' . $logs_html . '
+                
+                <p style="margin-top: 40px; font-size: 12px; color: #6c757d; border-top: 1px solid #dee2e6; padding-top: 10px;">
+                    This email is auto-generated by the UXPA Network Performance & Guard plugin installed on ' . esc_url( site_url() ) . '. To change settings, log in and visit the plugin options page.
+                </p>
+            </div>
+        </body>
+        </html>';
+
+        $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
+
+        wp_mail( $to, $subject, $body, $headers );
+    }
+
     public function render_settings_page(): void {
         $can_manage = $this->is_network_active ? current_user_can( 'manage_network_options' ) : current_user_can( 'manage_options' );
         if ( ! $can_manage ) {
@@ -195,15 +406,53 @@ class UxpaNetworkPerformanceGuard {
         if ( isset( $_POST['uxpa_guard_save_settings'] ) ) {
             check_admin_referer( 'uxpa_guard_settings_nonce' );
 
-            $new_settings = [
-                'block_author'   => isset( $_POST['block_author'] ),
-                'block_rest'     => isset( $_POST['block_rest'] ),
-                'cron_threshold' => isset( $_POST['cron_threshold'] ) ? max( 1, (int) $_POST['cron_threshold'] ) : 5,
-            ];
+            $tab = isset( $_POST['tab_submitted'] ) ? sanitize_key( $_POST['tab_submitted'] ) : 'security';
+            
+            if ( $tab === 'security' ) {
+                $new_settings = [
+                    'block_author'        => isset( $_POST['block_author'] ),
+                    'block_rest'          => isset( $_POST['block_rest'] ),
+                    'cron_threshold'      => $this->settings['cron_threshold'],
+                    'report_admin_user'   => isset( $_POST['report_admin_user'] ) ? sanitize_text_field( trim( $_POST['report_admin_user'] ) ) : $this->settings['report_admin_user'],
+                    'report_interval'     => isset( $_POST['report_interval'] ) ? sanitize_text_field( $_POST['report_interval'] ) : $this->settings['report_interval'],
+                ];
+            } else {
+                $new_settings = [
+                    'block_author'        => $this->settings['block_author'],
+                    'block_rest'          => $this->settings['block_rest'],
+                    'cron_threshold'      => isset( $_POST['cron_threshold'] ) ? max( 1, (int) $_POST['cron_threshold'] ) : 5,
+                    'report_admin_user'   => $this->settings['report_admin_user'],
+                    'report_interval'     => $this->settings['report_interval'],
+                ];
+            }
+
+            // Validate Username if report_interval is not disabled
+            $username_error = '';
+            if ( $new_settings['report_interval'] !== 'disabled' && ! empty( $new_settings['report_admin_user'] ) ) {
+                $user = get_user_by( 'login', $new_settings['report_admin_user'] );
+                if ( ! $user ) {
+                    $username_error = 'The configured username does not exist.';
+                } else {
+                    $is_admin = $this->is_network_active ? user_can( $user->ID, 'manage_network_options' ) : user_can( $user->ID, 'manage_options' );
+                    if ( ! $is_admin ) {
+                        $username_error = 'The configured user does not have administrator privileges.';
+                    }
+                }
+            } elseif ( $new_settings['report_interval'] !== 'disabled' && empty( $new_settings['report_admin_user'] ) ) {
+                $username_error = 'Please provide an administrator username to schedule reports.';
+            }
+
+            if ( $username_error ) {
+                $new_settings['report_interval'] = 'disabled'; // Fallback to disabled
+                echo '<div class="notice notice-error is-dismissible"><p><strong>Error: ' . esc_html( $username_error ) . ' Email reporting has been disabled.</strong></p></div>';
+            } else {
+                // Reschedule WP-Cron
+                $this->reschedule_report_cron( $new_settings['report_interval'] );
+                echo '<div class="notice notice-success is-dismissible"><p><strong>Settings saved successfully.</strong></p></div>';
+            }
 
             $this->update_guard_option( self::SETTINGS_KEY, $new_settings );
             $this->load_settings();
-            echo '<div class="notice notice-success is-dismissible"><p><strong>Settings saved successfully.</strong></p></div>';
         }
 
         // Process Settings Reset
@@ -211,6 +460,7 @@ class UxpaNetworkPerformanceGuard {
             check_admin_referer( 'uxpa_guard_settings_nonce' );
             $this->update_guard_option( self::LOGS_KEY, [] );
             $this->update_guard_option( 'uxpa_network_guard_blocked_count', 0 );
+            $this->update_guard_option( 'uxpa_network_guard_daily_stats', [] );
             echo '<div class="notice notice-info is-dismissible"><p><strong>Interception counters and logs cleared.</strong></p></div>';
         }
 
@@ -259,18 +509,61 @@ class UxpaNetworkPerformanceGuard {
     private function render_dashboard_tab(): void {
         $blocked_count = $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
         $recent_logs   = $this->get_guard_option( self::LOGS_KEY, [] );
+        
+        // Calculate 7-day and 30-day statistics
+        $daily_stats = $this->get_guard_option( 'uxpa_network_guard_daily_stats', [] );
+        $seven_days_total = 0;
+        $thirty_days_total = 0;
+        $idx = 0;
+        if ( is_array( $daily_stats ) ) {
+            foreach ( $daily_stats as $date => $count ) {
+                if ( $idx < 7 ) {
+                    $seven_days_total += $count;
+                }
+                if ( $idx < 30 ) {
+                    $thirty_days_total += $count;
+                }
+                $idx++;
+            }
+        }
+
+        $csv_export_url = wp_nonce_url( admin_url( 'index.php?action=uxpa_export_csv' ), 'uxpa_export_csv_nonce' );
         ?>
-        <div class="welcome-panel" style="padding: 20px; margin-bottom: 20px;">
-            <div class="welcome-panel-content">
-                <h2>Security Status Overview</h2>
-                <p class="about-description">Currently shielding user archives and REST API routes from harvesting loops.</p>
-                <div style="font-size: 24px; font-weight: bold; color: #d63638; margin: 15px 0;">
-                    <?php echo esc_html( number_format_i18n( $blocked_count ) ); ?> <span style="font-size: 16px; font-weight: normal; color: #50575e;">malicious harvesting attempts intercepted.</span>
-                </div>
+        <div style="display: flex; gap: 20px; margin-bottom: 20px;">
+            <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px; border-left: 4px solid #d63638;">
+                <h3>Total Blocked Attempts</h3>
+                <p style="font-size: 24px; font-weight: bold; margin: 10px 0; color: #d63638;">
+                    <?php echo esc_html( number_format_i18n( $blocked_count ) ); ?>
+                </p>
+                <p class="description">Cumulative harvesting attempts intercepted since reset.</p>
+            </div>
+            <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+                <h3>Blocked (Last 7 Days)</h3>
+                <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
+                    <?php echo esc_html( number_format_i18n( $seven_days_total ) ); ?>
+                </p>
+                <p class="description">Attack interceptions over the past week.</p>
+            </div>
+            <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+                <h3>Blocked (Last 30 Days)</h3>
+                <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
+                    <?php echo esc_html( number_format_i18n( $thirty_days_total ) ); ?>
+                </p>
+                <p class="description">Attack interceptions over the past 30 days.</p>
             </div>
         </div>
 
-        <h3>Recent Intercepted Attempts</h3>
+        <div style="margin-bottom: 20px; display: flex; gap: 10px; align-items: center;">
+            <a href="<?php echo esc_url( $csv_export_url ); ?>" class="button button-primary">Download CSV Report</a>
+            <?php if ( ! empty( $recent_logs ) ) : ?>
+                <form method="post" style="display: inline;">
+                    <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
+                    <input type="submit" name="uxpa_guard_reset_logs" class="button button-secondary" value="Clear Interception Logs & Counter" />
+                </form>
+            <?php endif; ?>
+        </div>
+
+        <h3>Recent Intercepted Attempts (Last 50 Logs)</h3>
         <table class="wp-list-table widefat fixed striped">
             <thead>
                 <tr>
@@ -313,13 +606,6 @@ class UxpaNetworkPerformanceGuard {
                 <?php endif; ?>
             </tbody>
         </table>
-
-        <?php if ( ! empty( $recent_logs ) ) : ?>
-            <form method="post" style="margin-top: 15px;">
-                <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
-                <input type="submit" name="uxpa_guard_reset_logs" class="button button-secondary" value="Clear Interception Logs & Counter" />
-            </form>
-        <?php endif; ?>
         <?php
     }
 
@@ -327,6 +613,9 @@ class UxpaNetworkPerformanceGuard {
         ?>
         <form method="post">
             <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
+            <input type="hidden" name="tab_submitted" value="security" />
+            
+            <h2>Interception Toggles</h2>
             <table class="form-table" role="presentation">
                 <tr>
                     <th scope="row">Query User Enumeration</th>
@@ -349,7 +638,31 @@ class UxpaNetworkPerformanceGuard {
                     </td>
                 </tr>
             </table>
-            <?php submit_button( 'Save Security Settings', 'primary', 'uxpa_guard_save_settings' ); ?>
+
+            <h2>Automated Email Reports</h2>
+            <table class="form-table" role="presentation">
+                <tr>
+                    <th scope="row"><label for="report_admin_user">Recipient Admin Username</label></th>
+                    <td>
+                        <input name="report_admin_user" type="text" id="report_admin_user" class="regular-text" value="<?php echo esc_attr( $this->settings['report_admin_user'] ); ?>" placeholder="e.g. admin_username" />
+                        <p class="description">Provide the WordPress login username of the administrator to receive reports. This username must exist and have administrative capabilities.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="report_interval">Email Frequency</label></th>
+                    <td>
+                        <select name="report_interval" id="report_interval">
+                            <option value="disabled" <?php selected( $this->settings['report_interval'], 'disabled' ); ?>>Disabled</option>
+                            <option value="daily" <?php selected( $this->settings['report_interval'], 'daily' ); ?>>Daily</option>
+                            <option value="weekly" <?php selected( $this->settings['report_interval'], 'weekly' ); ?>>Weekly</option>
+                            <option value="monthly" <?php selected( $this->settings['report_interval'], 'monthly' ); ?>>Monthly</option>
+                        </select>
+                        <p class="description">Select the recurring schedule to dispatch security reports to the configured administrator.</p>
+                    </td>
+                </tr>
+            </table>
+
+            <?php submit_button( 'Save Security & Reporting Settings', 'primary', 'uxpa_guard_save_settings' ); ?>
         </form>
         <?php
     }
@@ -365,7 +678,6 @@ class UxpaNetworkPerformanceGuard {
             switch_to_blog( $target_blog_id );
         }
 
-        // Fetch raw cron data for the target blog
         $cron_option = get_option( 'cron', [] );
         $cron_serialized = maybe_serialize( $cron_option );
         $cron_size = strlen( $cron_serialized );
@@ -471,8 +783,7 @@ class UxpaNetworkPerformanceGuard {
 
         <form method="post">
             <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
-            <input type="hidden" name="block_author" value="<?php echo $this->settings['block_author'] ? '1' : ''; ?>" />
-            <input type="hidden" name="block_rest" value="<?php echo $this->settings['block_rest'] ? '1' : ''; ?>" />
+            <input type="hidden" name="tab_submitted" value="cron" />
 
             <table class="form-table" role="presentation">
                 <tr>
