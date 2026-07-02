@@ -6,7 +6,6 @@
  * Author: Greg Miller for UXPA International
  * Author URI: https://shrinkraylabs.com
  * Text Domain: uxpa-network-performance-guard
- * Network: true
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
