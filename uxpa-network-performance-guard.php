@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UXPA Network Performance & Guard
  * Description: Intercepts user enumeration attempts early and prevents cron option data pollution.
- * Version: 1.2
+ * Version: 1.3
  * Author: Greg Miller for UXPA International
  * Author URI: https://shrinkraylabs.com
  * Text Domain: uxpa-network-performance-guard
@@ -17,8 +17,10 @@ class UxpaNetworkPerformanceGuard {
     private const LOGS_KEY     = 'uxpa_network_guard_blocked_log';
 
     private $settings = [];
+    private $is_network_active = false;
 
     public function __construct() {
+        $this->check_activation_context();
         $this->load_settings();
 
         // 1. Intercept user enumeration early (before theme loads, after pluggable is loaded)
@@ -28,13 +30,39 @@ class UxpaNetworkPerformanceGuard {
         add_filter( 'pre_update_option_cron', [ $this, 'clean_cron_option_on_update' ] );
         add_filter( 'pre_update_site_option_cron', [ $this, 'clean_cron_option_on_update' ] );
 
-        // 3. Register settings page (under Network Settings on Multisite, or standard Options page on Single-site)
+        // 3. Register settings page
         add_action( 'admin_menu', [ $this, 'register_admin_settings_page' ] );
         add_action( 'network_admin_menu', [ $this, 'register_network_settings_page' ] );
     }
 
+    private function check_activation_context(): void {
+        if ( is_multisite() ) {
+            $active_plugins = get_site_option( 'active_sitewide_plugins', [] );
+            $plugin_path = plugin_basename( __FILE__ );
+            if ( isset( $active_plugins[ $plugin_path ] ) ) {
+                $this->is_network_active = true;
+            }
+        }
+    }
+
+    private function get_guard_option( string $key, $default = [] ) {
+        if ( $this->is_network_active ) {
+            return get_site_option( $key, $default );
+        } else {
+            return get_option( $key, $default );
+        }
+    }
+
+    private function update_guard_option( string $key, $value ): void {
+        if ( $this->is_network_active ) {
+            update_site_option( $key, $value );
+        } else {
+            update_option( $key, $value, false );
+        }
+    }
+
     private function load_settings(): void {
-        $stored = get_site_option( self::SETTINGS_KEY, [] );
+        $stored = $this->get_guard_option( self::SETTINGS_KEY, [] );
         if ( ! is_array( $stored ) ) {
             $stored = [];
         }
@@ -65,7 +93,7 @@ class UxpaNetworkPerformanceGuard {
     }
 
     private function log_blocked_attempt( string $type, string $target ): void {
-        $logs = get_site_option( self::LOGS_KEY, [] );
+        $logs = $this->get_guard_option( self::LOGS_KEY, [] );
         if ( ! is_array( $logs ) ) {
             $logs = [];
         }
@@ -85,11 +113,11 @@ class UxpaNetworkPerformanceGuard {
 
         array_unshift( $logs, $new_entry );
         $logs = array_slice( $logs, 0, 10 ); // Keep only latest 10
-        update_site_option( self::LOGS_KEY, $logs );
+        $this->update_guard_option( self::LOGS_KEY, $logs );
         
         // Update a simple counter
-        $count = (int) get_site_option( 'uxpa_network_guard_blocked_count', 0 );
-        update_site_option( 'uxpa_network_guard_blocked_count', $count + 1 );
+        $count = (int) $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
+        $this->update_guard_option( 'uxpa_network_guard_blocked_count', $count + 1 );
     }
 
     public function clean_cron_option_on_update( $new_value ) {
@@ -123,7 +151,7 @@ class UxpaNetworkPerformanceGuard {
     }
 
     public function register_admin_settings_page(): void {
-        if ( is_multisite() ) {
+        if ( $this->is_network_active ) {
             return; // Managed network-wide on Multisite
         }
         add_options_page(
@@ -136,6 +164,9 @@ class UxpaNetworkPerformanceGuard {
     }
 
     public function register_network_settings_page(): void {
+        if ( ! $this->is_network_active ) {
+            return; // Only register under Network Admin if network-activated
+        }
         add_submenu_page(
             'settings.php',
             'UXPA Performance Guard',
@@ -147,7 +178,7 @@ class UxpaNetworkPerformanceGuard {
     }
 
     public function render_settings_page(): void {
-        $can_manage = is_multisite() ? current_user_can( 'manage_network_options' ) : current_user_can( 'manage_options' );
+        $can_manage = $this->is_network_active ? current_user_can( 'manage_network_options' ) : current_user_can( 'manage_options' );
         if ( ! $can_manage ) {
             wp_die( 'You do not have permission to access this page.' );
         }
@@ -164,7 +195,7 @@ class UxpaNetworkPerformanceGuard {
                 'cron_threshold' => isset( $_POST['cron_threshold'] ) ? max( 1, (int) $_POST['cron_threshold'] ) : 5,
             ];
 
-            update_site_option( self::SETTINGS_KEY, $new_settings );
+            $this->update_guard_option( self::SETTINGS_KEY, $new_settings );
             $this->load_settings();
             echo '<div class="notice notice-success is-dismissible"><p><strong>Settings saved successfully.</strong></p></div>';
         }
@@ -172,8 +203,8 @@ class UxpaNetworkPerformanceGuard {
         // Process Settings Reset
         if ( isset( $_POST['uxpa_guard_reset_logs'] ) ) {
             check_admin_referer( 'uxpa_guard_settings_nonce' );
-            update_site_option( self::LOGS_KEY, [] );
-            update_site_option( 'uxpa_network_guard_blocked_count', 0 );
+            $this->update_guard_option( self::LOGS_KEY, [] );
+            $this->update_guard_option( 'uxpa_network_guard_blocked_count', 0 );
             echo '<div class="notice notice-info is-dismissible"><p><strong>Interception counters and logs cleared.</strong></p></div>';
         }
         ?>
@@ -208,8 +239,8 @@ class UxpaNetworkPerformanceGuard {
     }
 
     private function render_dashboard_tab(): void {
-        $blocked_count = get_site_option( 'uxpa_network_guard_blocked_count', 0 );
-        $recent_logs   = get_site_option( self::LOGS_KEY, [] );
+        $blocked_count = $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
+        $recent_logs   = $this->get_guard_option( self::LOGS_KEY, [] );
         ?>
         <div class="welcome-panel" style="padding: 20px; margin-bottom: 20px;">
             <div class="welcome-panel-content">
@@ -308,7 +339,7 @@ class UxpaNetworkPerformanceGuard {
     private function render_cron_tab(): void {
         // Handle target blog selection in Multisite
         $target_blog_id = get_current_blog_id();
-        if ( is_multisite() && isset( $_GET['cron_blog_id'] ) ) {
+        if ( $this->is_network_active && isset( $_GET['cron_blog_id'] ) ) {
             $target_blog_id = (int) $_GET['cron_blog_id'];
         }
 
@@ -345,7 +376,7 @@ class UxpaNetworkPerformanceGuard {
         }
         ?>
 
-        <?php if ( is_multisite() ) : ?>
+        <?php if ( $this->is_network_active ) : ?>
             <div style="margin-bottom: 20px; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
                 <form method="get" action="">
                     <input type="hidden" name="page" value="uxpa-performance-guard" />
