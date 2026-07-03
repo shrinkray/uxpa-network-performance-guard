@@ -477,15 +477,19 @@ class UxpaNetworkPerformanceGuard {
         }
         ?>
 
+        <?php
+        $base_url = $this->is_network_active ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
+        $base_url = add_query_arg( [ 'page' => 'uxpa-performance-guard' ], $base_url );
+        ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'UXPA Network Performance & Guard', 'uxpa-network-performance-guard' ); ?></h1>
             <p class="description"><?php esc_html_e( 'Lightweight diagnostics and controls to block bots and prevent WP-Cron option bloat.', 'uxpa-network-performance-guard' ); ?></p>
 
             <h2 class="nav-tab-wrapper">
-                <a href="?page=uxpa-performance-guard&tab=welcome" class="nav-tab <?php echo $active_tab === 'welcome' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Welcome', 'uxpa-network-performance-guard' ); ?></a>
-                <a href="?page=uxpa-performance-guard&tab=dashboard" class="nav-tab <?php echo $active_tab === 'dashboard' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Dashboard', 'uxpa-network-performance-guard' ); ?></a>
-                <a href="?page=uxpa-performance-guard&tab=security" class="nav-tab <?php echo $active_tab === 'security' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Security Settings', 'uxpa-network-performance-guard' ); ?></a>
-                <a href="?page=uxpa-performance-guard&tab=cron" class="nav-tab <?php echo $active_tab === 'cron' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Cron Health', 'uxpa-network-performance-guard' ); ?></a>
+                <a href="<?php echo esc_url( add_query_arg( 'tab', 'welcome', $base_url ) ); ?>" class="nav-tab <?php echo $active_tab === 'welcome' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Welcome', 'uxpa-network-performance-guard' ); ?></a>
+                <a href="<?php echo esc_url( add_query_arg( 'tab', 'dashboard', $base_url ) ); ?>" class="nav-tab <?php echo $active_tab === 'dashboard' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Dashboard', 'uxpa-network-performance-guard' ); ?></a>
+                <a href="<?php echo esc_url( add_query_arg( 'tab', 'security', $base_url ) ); ?>" class="nav-tab <?php echo $active_tab === 'security' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Security Settings', 'uxpa-network-performance-guard' ); ?></a>
+                <a href="<?php echo esc_url( add_query_arg( 'tab', 'cron', $base_url ) ); ?>" class="nav-tab <?php echo $active_tab === 'cron' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Cron Health', 'uxpa-network-performance-guard' ); ?></a>
             </h2>
 
             <div class="settings-container-two-columns" style="display: flex; gap: 30px; margin-top: 20px; align-items: flex-start;">
@@ -905,6 +909,8 @@ class UxpaNetworkPerformanceGuard {
      * Render sidebar guide for the active tab.
      */
     private function render_sidebar_guide( string $tab ): void {
+        $base_url = $this->is_network_active ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
+        $base_url = add_query_arg( [ 'page' => 'uxpa-performance-guard' ], $base_url );
         switch ( $tab ) {
             case 'welcome':
                 ?>
@@ -932,19 +938,19 @@ class UxpaNetworkPerformanceGuard {
                 <h4 style="margin: 0 0 10px 0; font-size: 14px;"><?php esc_html_e( 'Quick Shortcuts', 'uxpa-network-performance-guard' ); ?></h4>
                 <ul style="list-style: none; padding-left: 0; margin: 0; font-size: 13px;">
                     <li style="margin-bottom: 8px;">
-                        <a href="?page=uxpa-performance-guard&tab=dashboard" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
+                        <a href="<?php echo esc_url( add_query_arg( 'tab', 'dashboard', $base_url ) ); ?>" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
                             <span class="dashicons dashicons-chart-bar" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px;"></span>
                             <?php esc_html_e( 'Security Dashboard', 'uxpa-network-performance-guard' ); ?>
                         </a>
                     </li>
                     <li style="margin-bottom: 8px;">
-                        <a href="?page=uxpa-performance-guard&tab=security" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
+                        <a href="<?php echo esc_url( add_query_arg( 'tab', 'security', $base_url ) ); ?>" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
                             <span class="dashicons dashicons-shield" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px;"></span>
                             <?php esc_html_e( 'Interception Settings', 'uxpa-network-performance-guard' ); ?>
                         </a>
                     </li>
                     <li style="margin-bottom: 0;">
-                        <a href="?page=uxpa-performance-guard&tab=cron" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
+                        <a href="<?php echo esc_url( add_query_arg( 'tab', 'cron', $base_url ) ); ?>" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
                             <span class="dashicons dashicons-clock" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px;"></span>
                             <?php esc_html_e( 'Cron & Queue Health', 'uxpa-network-performance-guard' ); ?>
                         </a>
