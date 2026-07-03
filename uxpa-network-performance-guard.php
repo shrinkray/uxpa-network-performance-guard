@@ -400,7 +400,7 @@ class UxpaNetworkPerformanceGuard {
             wp_die( 'You do not have permission to access this page.' );
         }
 
-        $active_tab = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'dashboard';
+        $active_tab = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'welcome';
 
         // Process Settings Save
         if ( isset( $_POST['uxpa_guard_save_settings'] ) ) {
@@ -431,24 +431,24 @@ class UxpaNetworkPerformanceGuard {
             if ( $new_settings['report_interval'] !== 'disabled' && ! empty( $new_settings['report_admin_user'] ) ) {
                 $user = get_user_by( 'login', $new_settings['report_admin_user'] );
                 if ( ! $user ) {
-                    $username_error = 'The configured username does not exist.';
+                    $username_error = __( 'The configured username does not exist.', 'uxpa-network-performance-guard' );
                 } else {
                     $is_admin = $this->is_network_active ? user_can( $user->ID, 'manage_network_options' ) : user_can( $user->ID, 'manage_options' );
                     if ( ! $is_admin ) {
-                        $username_error = 'The configured user does not have administrator privileges.';
+                        $username_error = __( 'The configured user does not have administrator privileges.', 'uxpa-network-performance-guard' );
                     }
                 }
             } elseif ( $new_settings['report_interval'] !== 'disabled' && empty( $new_settings['report_admin_user'] ) ) {
-                $username_error = 'Please provide an administrator username to schedule reports.';
+                $username_error = __( 'Please provide an administrator username to schedule reports.', 'uxpa-network-performance-guard' );
             }
 
             if ( $username_error ) {
                 $new_settings['report_interval'] = 'disabled'; // Fallback to disabled
-                echo '<div class="notice notice-error is-dismissible"><p><strong>Error: ' . esc_html( $username_error ) . ' Email reporting has been disabled.</strong></p></div>';
+                echo '<div class="notice notice-error is-dismissible"><p><strong>' . esc_html__( 'Error:', 'uxpa-network-performance-guard' ) . ' ' . esc_html( $username_error ) . ' ' . esc_html__( 'Email reporting has been disabled.', 'uxpa-network-performance-guard' ) . '</strong></p></div>';
             } else {
                 // Reschedule WP-Cron
                 $this->reschedule_report_cron( $new_settings['report_interval'] );
-                echo '<div class="notice notice-success is-dismissible"><p><strong>Settings saved successfully.</strong></p></div>';
+                echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__( 'Settings saved successfully.', 'uxpa-network-performance-guard' ) . '</strong></p></div>';
             }
 
             $this->update_guard_option( self::SETTINGS_KEY, $new_settings );
@@ -461,7 +461,7 @@ class UxpaNetworkPerformanceGuard {
             $this->update_guard_option( self::LOGS_KEY, [] );
             $this->update_guard_option( 'uxpa_network_guard_blocked_count', 0 );
             $this->update_guard_option( 'uxpa_network_guard_daily_stats', [] );
-            echo '<div class="notice notice-info is-dismissible"><p><strong>Interception counters and logs cleared.</strong></p></div>';
+            echo '<div class="notice notice-info is-dismissible"><p><strong>' . esc_html__( 'Interception counters and logs cleared.', 'uxpa-network-performance-guard' ) . '</strong></p></div>';
         }
 
         // Process Action Scheduler Manual Purge
@@ -470,37 +470,47 @@ class UxpaNetworkPerformanceGuard {
             if ( class_exists( 'ActionScheduler_QueueCleaner' ) ) {
                 $cleaner = new ActionScheduler_QueueCleaner();
                 $cleaner->delete_old_actions();
-                echo '<div class="notice notice-success is-dismissible"><p><strong>Action Scheduler logs pruned successfully.</strong></p></div>';
+                echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__( 'Action Scheduler logs pruned successfully.', 'uxpa-network-performance-guard' ) . '</strong></p></div>';
             } else {
-                echo '<div class="notice notice-error is-dismissible"><p><strong>Action Scheduler cleaner class not found.</strong></p></div>';
+                echo '<div class="notice notice-error is-dismissible"><p><strong>' . esc_html__( 'Action Scheduler cleaner class not found.', 'uxpa-network-performance-guard' ) . '</strong></p></div>';
             }
         }
         ?>
 
         <div class="wrap">
-            <h1>UXPA Network Performance & Guard</h1>
-            <p class="description">Lightweight diagnostics and controls to block bots and prevent WP-Cron option bloat.</p>
+            <h1><?php esc_html_e( 'UXPA Network Performance & Guard', 'uxpa-network-performance-guard' ); ?></h1>
+            <p class="description"><?php esc_html_e( 'Lightweight diagnostics and controls to block bots and prevent WP-Cron option bloat.', 'uxpa-network-performance-guard' ); ?></p>
 
             <h2 class="nav-tab-wrapper">
-                <a href="?page=uxpa-performance-guard&tab=dashboard" class="nav-tab <?php echo $active_tab === 'dashboard' ? 'nav-tab-active' : ''; ?>">Dashboard</a>
-                <a href="?page=uxpa-performance-guard&tab=security" class="nav-tab <?php echo $active_tab === 'security' ? 'nav-tab-active' : ''; ?>">Security Settings</a>
-                <a href="?page=uxpa-performance-guard&tab=cron" class="nav-tab <?php echo $active_tab === 'cron' ? 'nav-tab-active' : ''; ?>">Cron Health</a>
+                <a href="?page=uxpa-performance-guard&tab=welcome" class="nav-tab <?php echo $active_tab === 'welcome' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Welcome', 'uxpa-network-performance-guard' ); ?></a>
+                <a href="?page=uxpa-performance-guard&tab=dashboard" class="nav-tab <?php echo $active_tab === 'dashboard' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Dashboard', 'uxpa-network-performance-guard' ); ?></a>
+                <a href="?page=uxpa-performance-guard&tab=security" class="nav-tab <?php echo $active_tab === 'security' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Security Settings', 'uxpa-network-performance-guard' ); ?></a>
+                <a href="?page=uxpa-performance-guard&tab=cron" class="nav-tab <?php echo $active_tab === 'cron' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Cron Health', 'uxpa-network-performance-guard' ); ?></a>
             </h2>
 
-            <div class="tab-content" style="margin-top: 15px;">
-                <?php
-                switch ( $active_tab ) {
-                    case 'dashboard':
-                        $this->render_dashboard_tab();
-                        break;
-                    case 'security':
-                        $this->render_security_tab();
-                        break;
-                    case 'cron':
-                        $this->render_cron_tab();
-                        break;
-                }
-                ?>
+            <div class="settings-container-two-columns" style="display: flex; gap: 30px; margin-top: 20px; align-items: flex-start;">
+                <div class="main-settings-content" style="flex: 3; min-width: 0;">
+                    <?php
+                    switch ( $active_tab ) {
+                        case 'welcome':
+                            $this->render_welcome_tab();
+                            break;
+                        case 'dashboard':
+                            $this->render_dashboard_tab();
+                            break;
+                        case 'security':
+                            $this->render_security_tab();
+                            break;
+                        case 'cron':
+                            $this->render_cron_tab();
+                            break;
+                    }
+                    ?>
+                </div>
+
+                <div class="sidebar-settings-guide" style="flex: 1; min-width: 280px; max-width: 360px; background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; box-shadow: 0 1px 1px rgba(0,0,0,.04); box-sizing: border-box;">
+                    <?php $this->render_sidebar_guide( $active_tab ); ?>
+                </div>
             </div>
         </div>
         <?php
@@ -531,55 +541,55 @@ class UxpaNetworkPerformanceGuard {
         ?>
         <div style="display: flex; gap: 20px; margin-bottom: 20px;">
             <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px; border-left: 4px solid #d63638;">
-                <h3>Total Blocked Attempts</h3>
+                <h3><?php esc_html_e( 'Total Blocked Attempts', 'uxpa-network-performance-guard' ); ?></h3>
                 <p style="font-size: 24px; font-weight: bold; margin: 10px 0; color: #d63638;">
                     <?php echo esc_html( number_format_i18n( $blocked_count ) ); ?>
                 </p>
-                <p class="description">Cumulative harvesting attempts intercepted since reset.</p>
+                <p class="description"><?php esc_html_e( 'Cumulative harvesting attempts intercepted since reset.', 'uxpa-network-performance-guard' ); ?></p>
             </div>
             <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
-                <h3>Blocked (Last 7 Days)</h3>
+                <h3><?php esc_html_e( 'Blocked (Last 7 Days)', 'uxpa-network-performance-guard' ); ?></h3>
                 <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
                     <?php echo esc_html( number_format_i18n( $seven_days_total ) ); ?>
                 </p>
-                <p class="description">Attack interceptions over the past week.</p>
+                <p class="description"><?php esc_html_e( 'Attack interceptions over the past week.', 'uxpa-network-performance-guard' ); ?></p>
             </div>
             <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
-                <h3>Blocked (Last 30 Days)</h3>
+                <h3><?php esc_html_e( 'Blocked (Last 30 Days)', 'uxpa-network-performance-guard' ); ?></h3>
                 <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
                     <?php echo esc_html( number_format_i18n( $thirty_days_total ) ); ?>
                 </p>
-                <p class="description">Attack interceptions over the past 30 days.</p>
+                <p class="description"><?php esc_html_e( 'Attack interceptions over the past 30 days.', 'uxpa-network-performance-guard' ); ?></p>
             </div>
         </div>
 
         <div style="margin-bottom: 20px; display: flex; gap: 10px; align-items: center;">
-            <a href="<?php echo esc_url( $csv_export_url ); ?>" class="button button-primary">Download CSV Report</a>
+            <a href="<?php echo esc_url( $csv_export_url ); ?>" class="button button-primary"><?php esc_html_e( 'Download CSV Report', 'uxpa-network-performance-guard' ); ?></a>
             <?php if ( ! empty( $recent_logs ) ) : ?>
                 <form method="post" style="display: inline;">
                     <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
-                    <input type="submit" name="uxpa_guard_reset_logs" class="button button-secondary" value="Clear Interception Logs & Counter" />
+                    <input type="submit" name="uxpa_guard_reset_logs" class="button button-secondary" value="<?php esc_attr_e( 'Clear Interception Logs & Counter', 'uxpa-network-performance-guard' ); ?>" />
                 </form>
             <?php endif; ?>
         </div>
 
-        <h3>Recent Intercepted Attempts (Last 50 Logs)</h3>
+        <h3><?php esc_html_e( 'Recent Intercepted Attempts (Last 50 Logs)', 'uxpa-network-performance-guard' ); ?></h3>
         <table class="wp-list-table widefat fixed striped">
             <thead>
                 <tr>
-                    <th style="width: 18%;">Time</th>
+                    <th style="width: 18%;"><?php esc_html_e( 'Time', 'uxpa-network-performance-guard' ); ?></th>
                     <?php if ( is_multisite() ) : ?>
-                        <th style="width: 15%;">Sub-Site</th>
+                        <th style="width: 15%;"><?php esc_html_e( 'Sub-Site', 'uxpa-network-performance-guard' ); ?></th>
                     <?php endif; ?>
-                    <th style="width: 18%;">IP Address</th>
-                    <th style="width: 15%;">Block Type</th>
-                    <th>Target Query / Route</th>
+                    <th style="width: 18%;"><?php esc_html_e( 'IP Address', 'uxpa-network-performance-guard' ); ?></th>
+                    <th style="width: 15%;"><?php esc_html_e( 'Block Type', 'uxpa-network-performance-guard' ); ?></th>
+                    <th><?php esc_html_e( 'Target Query / Route', 'uxpa-network-performance-guard' ); ?></th>
                 </tr>
             </thead>
             <tbody>
                 <?php if ( empty( $recent_logs ) ) : ?>
                     <tr>
-                        <td colspan="<?php echo is_multisite() ? 5 : 4; ?>">No blocked harvesting attempts recorded yet.</td>
+                        <td colspan="<?php echo is_multisite() ? 5 : 4; ?>"><?php esc_html_e( 'No blocked harvesting attempts recorded yet.', 'uxpa-network-performance-guard' ); ?></td>
                     </tr>
                 <?php else : ?>
                     <?php foreach ( $recent_logs as $entry ) : ?>
@@ -597,7 +607,7 @@ class UxpaNetworkPerformanceGuard {
                             <td><code><?php echo esc_html( $entry['ip'] ); ?></code></td>
                             <td>
                                 <span class="badge" style="background: #f0f0f1; border: 1px solid #c3c4c7; padding: 2px 6px; border-radius: 3px; font-size: 11px;">
-                                    <?php echo ( isset( $entry['type'] ) && $entry['type'] === 'rest' ) ? 'REST API' : 'Query Parameter'; ?>
+                                    <?php echo ( isset( $entry['type'] ) && $entry['type'] === 'rest' ) ? esc_html__( 'REST API', 'uxpa-network-performance-guard' ) : esc_html__( 'Query Parameter', 'uxpa-network-performance-guard' ); ?>
                                 </span>
                             </td>
                             <td><code><?php echo esc_html( $entry['target'] ); ?></code></td>
@@ -615,54 +625,54 @@ class UxpaNetworkPerformanceGuard {
             <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
             <input type="hidden" name="tab_submitted" value="security" />
             
-            <h2>Interception Toggles</h2>
+            <h2><?php esc_html_e( 'Interception Toggles', 'uxpa-network-performance-guard' ); ?></h2>
             <table class="form-table" role="presentation">
                 <tr>
-                    <th scope="row">Query User Enumeration</th>
+                    <th scope="row"><?php esc_html_e( 'Query User Enumeration', 'uxpa-network-performance-guard' ); ?></th>
                     <td>
                         <label for="block_author">
                             <input name="block_author" type="checkbox" id="block_author" value="1" <?php checked( $this->settings['block_author'] ); ?> />
-                            Block author query-string harvesting (e.g. <code>/?author=N</code>)
+                            <?php echo wp_kses_post( __( 'Block author query-string harvesting (e.g. <code>/?author=N</code>)', 'uxpa-network-performance-guard' ) ); ?>
                         </label>
-                        <p class="description">Terminates unauthenticated requests instantly with a 403 Access Denied header.</p>
+                        <p class="description"><?php esc_html_e( 'Terminates unauthenticated requests instantly with a 403 Access Denied header.', 'uxpa-network-performance-guard' ); ?></p>
                     </td>
                 </tr>
                 <tr>
-                    <th scope="row">REST API User Enumeration</th>
+                    <th scope="row"><?php esc_html_e( 'REST API User Enumeration', 'uxpa-network-performance-guard' ); ?></th>
                     <td>
                         <label for="block_rest">
                             <input name="block_rest" type="checkbox" id="block_rest" value="1" <?php checked( $this->settings['block_rest'] ); ?> />
-                            Block unauthenticated REST API user endpoints (e.g. <code>/wp-json/wp/v2/users</code>)
+                            <?php echo wp_kses_post( __( 'Block unauthenticated REST API user endpoints (e.g. <code>/wp-json/wp/v2/users</code>)', 'uxpa-network-performance-guard' ) ); ?>
                         </label>
-                        <p class="description">Excludes unauthenticated requests from harvesting usernames via standard endpoints.</p>
+                        <p class="description"><?php esc_html_e( 'Excludes unauthenticated requests from harvesting usernames via standard endpoints.', 'uxpa-network-performance-guard' ); ?></p>
                     </td>
                 </tr>
             </table>
 
-            <h2>Automated Email Reports</h2>
+            <h2><?php esc_html_e( 'Automated Email Reports', 'uxpa-network-performance-guard' ); ?></h2>
             <table class="form-table" role="presentation">
                 <tr>
-                    <th scope="row"><label for="report_admin_user">Recipient Admin Username</label></th>
+                    <th scope="row"><label for="report_admin_user"><?php esc_html_e( 'Recipient Admin Username', 'uxpa-network-performance-guard' ); ?></label></th>
                     <td>
                         <input name="report_admin_user" type="text" id="report_admin_user" class="regular-text" value="<?php echo esc_attr( $this->settings['report_admin_user'] ); ?>" placeholder="e.g. admin_username" />
-                        <p class="description">Provide the WordPress login username of the administrator to receive reports. This username must exist and have administrative capabilities.</p>
+                        <p class="description"><?php esc_html_e( 'Provide the WordPress login username of the administrator to receive reports. This username must exist and have administrative capabilities.', 'uxpa-network-performance-guard' ); ?></p>
                     </td>
                 </tr>
                 <tr>
-                    <th scope="row"><label for="report_interval">Email Frequency</label></th>
+                    <th scope="row"><label for="report_interval"><?php esc_html_e( 'Email Frequency', 'uxpa-network-performance-guard' ); ?></label></th>
                     <td>
                         <select name="report_interval" id="report_interval">
-                            <option value="disabled" <?php selected( $this->settings['report_interval'], 'disabled' ); ?>>Disabled</option>
-                            <option value="daily" <?php selected( $this->settings['report_interval'], 'daily' ); ?>>Daily</option>
-                            <option value="weekly" <?php selected( $this->settings['report_interval'], 'weekly' ); ?>>Weekly</option>
-                            <option value="monthly" <?php selected( $this->settings['report_interval'], 'monthly' ); ?>>Monthly</option>
+                            <option value="disabled" <?php selected( $this->settings['report_interval'], 'disabled' ); ?>><?php esc_html_e( 'Disabled', 'uxpa-network-performance-guard' ); ?></option>
+                            <option value="daily" <?php selected( $this->settings['report_interval'], 'daily' ); ?>><?php esc_html_e( 'Daily', 'uxpa-network-performance-guard' ); ?></option>
+                            <option value="weekly" <?php selected( $this->settings['report_interval'], 'weekly' ); ?>><?php esc_html_e( 'Weekly', 'uxpa-network-performance-guard' ); ?></option>
+                            <option value="monthly" <?php selected( $this->settings['report_interval'], 'monthly' ); ?>><?php esc_html_e( 'Monthly', 'uxpa-network-performance-guard' ); ?></option>
                         </select>
-                        <p class="description">Select the recurring schedule to dispatch security reports to the configured administrator.</p>
+                        <p class="description"><?php esc_html_e( 'Select the recurring schedule to dispatch security reports to the configured administrator.', 'uxpa-network-performance-guard' ); ?></p>
                     </td>
                 </tr>
             </table>
 
-            <?php submit_button( 'Save Security & Reporting Settings', 'primary', 'uxpa_guard_save_settings' ); ?>
+            <?php submit_button( esc_html__( 'Save Security & Reporting Settings', 'uxpa-network-performance-guard' ), 'primary', 'uxpa_guard_save_settings' ); ?>
         </form>
         <?php
     }
@@ -711,7 +721,7 @@ class UxpaNetworkPerformanceGuard {
                 <form method="get" action="">
                     <input type="hidden" name="page" value="uxpa-performance-guard" />
                     <input type="hidden" name="tab" value="cron" />
-                    <label for="cron_blog_id"><strong>Select Sub-Site to Inspect:</strong></label>
+                    <label for="cron_blog_id"><strong><?php esc_html_e( 'Select Sub-Site to Inspect:', 'uxpa-network-performance-guard' ); ?></strong></label>
                     <select name="cron_blog_id" id="cron_blog_id" onchange="this.form.submit()">
                         <?php
                         $sites = get_sites( [ 'number' => 100 ] );
@@ -733,33 +743,33 @@ class UxpaNetworkPerformanceGuard {
 
         <div style="display: flex; gap: 20px; margin-bottom: 20px;">
             <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
-                <h3>Cron Option Size</h3>
+                <h3><?php esc_html_e( 'Cron Option Size', 'uxpa-network-performance-guard' ); ?></h3>
                 <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
                     <?php echo esc_html( size_format( $cron_size, 2 ) ); ?>
                 </p>
-                <p class="description">Total serialized byte count of the <code>cron</code> option row.</p>
+                <p class="description"><?php esc_html_e( 'Total serialized byte count of the cron option row.', 'uxpa-network-performance-guard' ); ?></p>
             </div>
             <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
-                <h3>Total Scheduled Events</h3>
+                <h3><?php esc_html_e( 'Total Scheduled Events', 'uxpa-network-performance-guard' ); ?></h3>
                 <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
                     <?php echo esc_html( $total_events ); ?>
                 </p>
-                <p class="description">Total number of events registered inside the scheduler queue.</p>
+                <p class="description"><?php esc_html_e( 'Total number of events registered inside the scheduler queue.', 'uxpa-network-performance-guard' ); ?></p>
             </div>
         </div>
 
-        <h3>Cron Option Composition (Top 5 Hooks)</h3>
+        <h3><?php esc_html_e( 'Cron Option Composition (Top 5 Hooks)', 'uxpa-network-performance-guard' ); ?></h3>
         <table class="wp-list-table widefat fixed striped" style="margin-bottom: 30px;">
             <thead>
                 <tr>
-                    <th>Hook Name</th>
-                    <th style="width: 25%;">Frequency Count</th>
+                    <th><?php esc_html_e( 'Hook Name', 'uxpa-network-performance-guard' ); ?></th>
+                    <th style="width: 25%;"><?php esc_html_e( 'Frequency Count', 'uxpa-network-performance-guard' ); ?></th>
                 </tr>
             </thead>
             <tbody>
                 <?php if ( empty( $top_hooks ) ) : ?>
                     <tr>
-                        <td colspan="2">No scheduled cron events detected.</td>
+                        <td colspan="2"><?php esc_html_e( 'No scheduled cron events detected.', 'uxpa-network-performance-guard' ); ?></td>
                     </tr>
                 <?php else : ?>
                     <?php foreach ( $top_hooks as $hook => $freq ) : ?>
@@ -773,11 +783,11 @@ class UxpaNetworkPerformanceGuard {
         </table>
 
         <div style="margin-bottom: 30px; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
-            <h3>Action Scheduler Maintenance</h3>
-            <p class="description" style="margin-bottom: 15px;">The system automatically retains Action Scheduler action logs for <strong>7 days</strong> (reduced from the default 30 days). You can force an immediate database queue cleanup below.</p>
+            <h3><?php esc_html_e( 'Action Scheduler Maintenance', 'uxpa-network-performance-guard' ); ?></h3>
+            <p class="description" style="margin-bottom: 15px;"><?php esc_html_e( 'The system automatically retains Action Scheduler action logs for 7 days (reduced from the default 30 days). You can force an immediate database queue cleanup below.', 'uxpa-network-performance-guard' ); ?></p>
             <form method="post" style="display: inline;">
                 <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
-                <input type="submit" name="uxpa_guard_purge_action_scheduler" class="button button-secondary" value="Purge Old Action Logs Now" />
+                <input type="submit" name="uxpa_guard_purge_action_scheduler" class="button button-secondary" value="<?php esc_attr_e( 'Purge Old Action Logs Now', 'uxpa-network-performance-guard' ); ?>" />
             </form>
         </div>
 
@@ -787,16 +797,204 @@ class UxpaNetworkPerformanceGuard {
 
             <table class="form-table" role="presentation">
                 <tr>
-                    <th scope="row"><label for="cron_threshold">Duplicate Event Limit</label></th>
+                    <th scope="row"><label for="cron_threshold"><?php esc_html_e( 'Duplicate Event Limit', 'uxpa-network-performance-guard' ); ?></label></th>
                     <td>
                         <input name="cron_threshold" type="number" id="cron_threshold" min="1" max="100" class="small-text" value="<?php echo esc_attr( $this->settings['cron_threshold'] ); ?>" />
-                        <p class="description">Maximum allowed occurrences of a single hook within the scheduled cron array before subsequent duplicates are pruned.</p>
+                        <p class="description"><?php esc_html_e( 'Maximum allowed occurrences of a single hook within the scheduled cron array before subsequent duplicates are pruned.', 'uxpa-network-performance-guard' ); ?></p>
                     </td>
                 </tr>
             </table>
-            <?php submit_button( 'Save Cron Settings', 'primary', 'uxpa_guard_save_settings' ); ?>
+            <?php submit_button( esc_html__( 'Save Cron Settings', 'uxpa-network-performance-guard' ), 'primary', 'uxpa_guard_save_settings' ); ?>
         </form>
         <?php
+    }
+
+    /**
+     * Render Welcome settings tab.
+     */
+    private function render_welcome_tab(): void {
+        ?>
+        <h2><?php esc_html_e( 'Welcome to UXPA Network Performance & Guard Suite', 'uxpa-network-performance-guard' ); ?></h2>
+        <p class="description" style="font-size: 14px; margin-bottom: 20px;">
+            <?php esc_html_e( 'A lightweight, high-performance security and database optimization engine designed to protect site operations and maintain a clean scheduler backend.', 'uxpa-network-performance-guard' ); ?>
+        </p>
+
+        <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; box-shadow: 0 1px 1px rgba(0,0,0,.04); margin-bottom: 30px;">
+            <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
+                <span class="dashicons dashicons-yes-alt" aria-hidden="true" style="color: #46b450; vertical-align: text-bottom; margin-right: 6px;"></span>
+                <?php esc_html_e( 'Key Problems We Solve', 'uxpa-network-performance-guard' ); ?>
+            </h3>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 15px;">
+                <div>
+                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
+                        <span class="dashicons dashicons-shield" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                        <?php esc_html_e( 'Early-Exit Bot Firewall', 'uxpa-network-performance-guard' ); ?>
+                    </h4>
+                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                        <?php echo wp_kses_post( __( 'Blocks malicious bot scans that list site usernames via <code>?author=N</code> query parameters or REST API requests, preventing credential harvesting before WordPress loads heavy database tasks.', 'uxpa-network-performance-guard' ) ); ?>
+                    </p>
+                </div>
+                <div>
+                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
+                        <span class="dashicons dashicons-admin-plugins" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                        <?php esc_html_e( 'Cron Database Health & Pruning', 'uxpa-network-performance-guard' ); ?>
+                    </h4>
+                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                        <?php esc_html_e( 'Automatically filters, cleans, and prevents cron option bloat from runaway duplicate scheduler queues or core transient issues.', 'uxpa-network-performance-guard' ); ?>
+                    </p>
+                </div>
+                <div>
+                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
+                        <span class="dashicons dashicons-chart-bar" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                        <?php esc_html_e( 'Daily Interception Stat Tracking', 'uxpa-network-performance-guard' ); ?>
+                    </h4>
+                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                        <?php esc_html_e( 'Actively logs intrusion attempt histories, recording IP addresses, sub-sites, block types, and target query parameters for transparent auditing.', 'uxpa-network-performance-guard' ); ?>
+                    </p>
+                </div>
+                <div>
+                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
+                        <span class="dashicons dashicons-email-alt" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                        <?php esc_html_e( 'Automated Email Reporting', 'uxpa-network-performance-guard' ); ?>
+                    </h4>
+                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                        <?php esc_html_e( 'Dispatches regular email summaries of blocked security attempts and cron table health metrics to a validated, authorized administrator.', 'uxpa-network-performance-guard' ); ?>
+                    </p>
+                </div>
+                <div>
+                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
+                        <span class="dashicons dashicons-database-export" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                        <?php esc_html_e( 'CSV Security Logs Export', 'uxpa-network-performance-guard' ); ?>
+                    </h4>
+                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                        <?php esc_html_e( 'Enables downloading the entire blocked-attack log history as a formatted CSV file for external audit processing.', 'uxpa-network-performance-guard' ); ?>
+                    </p>
+                </div>
+                <div>
+                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
+                        <span class="dashicons dashicons-clock" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                        <?php esc_html_e( 'Action Scheduler Retention Control', 'uxpa-network-performance-guard' ); ?>
+                    </h4>
+                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                        <?php esc_html_e( 'Optimizes retention periods for action scheduler queues down to 7 days, and offers a single-click manual database pruning utility.', 'uxpa-network-performance-guard' ); ?>
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div style="background: #f0f6fc; border-left: 4px solid #72aee6; padding: 25px; border-radius: 0 4px 4px 0; box-shadow: 0 1px 2px rgba(0,0,0,.05);">
+            <h3 style="margin-top: 0; font-size: 18px; color: #1d2327;">
+                <span class="dashicons dashicons-awards" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 6px; color: #135e96; font-size: 24px; width: 24px; height: 24px;"></span>
+                <?php esc_html_e( 'Need Custom WordPress Solutions & Optimization?', 'uxpa-network-performance-guard' ); ?>
+            </h3>
+            <p style="font-size: 14px; line-height: 1.5; color: #2c3338; max-width: 800px; margin-bottom: 20px;">
+                <?php esc_html_e( 'This plugin was designed and developed by Greg Miller at Shrinkray Labs. We specialize in high-performance WordPress engineering, custom plugin development, backend dashboard automation, and security/database tuning.', 'uxpa-network-performance-guard' ); ?>
+            </p>
+            <div style="margin: 0; display:flex;">
+                <a href="<?php echo esc_url( 'https://shrinkraylabs.com' ); ?>" target="_blank" rel="noopener noreferrer" class="button button-primary button-large" style="display: flex; justify-content: center; align-items: center;" aria-label="<?php esc_attr_e( 'Visit Shrinkray Labs (opens in a new tab)', 'uxpa-network-performance-guard' ); ?>">
+                    <span class="dashicons dashicons-external" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px; line-height: 1.3; margin-bottom: 0.4rem; margin-right: 0.2rem; color:white;"></span>
+                    <?php esc_html_e( 'Visit Shrinkray Labs', 'uxpa-network-performance-guard' ); ?>
+                </a>
+            </div>
+        </div>
+        <?php
+    }
+
+    /**
+     * Render sidebar guide for the active tab.
+     */
+    private function render_sidebar_guide( string $tab ): void {
+        switch ( $tab ) {
+            case 'welcome':
+                ?>
+                <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
+                    <span class="dashicons dashicons-admin-settings" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px;"></span>
+                    <?php esc_html_e( 'Plugin Metadata', 'uxpa-network-performance-guard' ); ?>
+                </h3>
+                <table class="wp-list-table widefat fixed striped" style="border: none; background: transparent; box-shadow: none; margin-top: 10px;">
+                    <tbody>
+                        <tr>
+                            <td style="padding: 6px 0; border: none;"><strong><?php esc_html_e( 'Version:', 'uxpa-network-performance-guard' ); ?></strong></td>
+                            <td style="padding: 6px 0; border: none; text-align: right;"><?php echo esc_html( '1.4' ); ?></td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; border: none;"><strong><?php esc_html_e( 'Developer:', 'uxpa-network-performance-guard' ); ?></strong></td>
+                            <td style="padding: 6px 0; border: none; text-align: right;"><a href="<?php echo esc_url( 'https://shrinkraylabs.com' ); ?>" target="_blank" rel="noopener noreferrer" aria-label="<?php esc_attr_e( 'Greg Miller (opens in a new tab)', 'uxpa-network-performance-guard' ); ?>"><?php esc_html_e( 'Greg Miller', 'uxpa-network-performance-guard' ); ?></a></td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; border: none;"><strong><?php esc_html_e( 'Organization:', 'uxpa-network-performance-guard' ); ?></strong></td>
+                            <td style="padding: 6px 0; border: none; text-align: right;"><?php esc_html_e( 'UXPA International', 'uxpa-network-performance-guard' ); ?></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <hr style="margin: 15px 0; border-top: 1px solid #eee;" />
+                <h4 style="margin: 0 0 10px 0; font-size: 14px;"><?php esc_html_e( 'Quick Shortcuts', 'uxpa-network-performance-guard' ); ?></h4>
+                <ul style="list-style: none; padding-left: 0; margin: 0; font-size: 13px;">
+                    <li style="margin-bottom: 8px;">
+                        <a href="?page=uxpa-performance-guard&tab=dashboard" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
+                            <span class="dashicons dashicons-chart-bar" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px;"></span>
+                            <?php esc_html_e( 'Security Dashboard', 'uxpa-network-performance-guard' ); ?>
+                        </a>
+                    </li>
+                    <li style="margin-bottom: 8px;">
+                        <a href="?page=uxpa-performance-guard&tab=security" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
+                            <span class="dashicons dashicons-shield" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px;"></span>
+                            <?php esc_html_e( 'Interception Settings', 'uxpa-network-performance-guard' ); ?>
+                        </a>
+                    </li>
+                    <li style="margin-bottom: 0;">
+                        <a href="?page=uxpa-performance-guard&tab=cron" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
+                            <span class="dashicons dashicons-clock" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px;"></span>
+                            <?php esc_html_e( 'Cron & Queue Health', 'uxpa-network-performance-guard' ); ?>
+                        </a>
+                    </li>
+                </ul>
+                <?php
+                break;
+
+            case 'dashboard':
+                ?>
+                <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
+                    <span class="dashicons dashicons-chart-bar" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px;"></span>
+                    <?php esc_html_e( 'Dashboard Guide', 'uxpa-network-performance-guard' ); ?>
+                </h3>
+                <p><strong><?php esc_html_e( 'Security Overview', 'uxpa-network-performance-guard' ); ?></strong></p>
+                <p><?php esc_html_e( 'The dashboard displays real-time statistics of blocked malicious requests attempting to harvest admin usernames. The logged data lists the timestamp, IP address, and target URI.', 'uxpa-network-performance-guard' ); ?></p>
+                <p><strong><?php esc_html_e( 'Actions:', 'uxpa-network-performance-guard' ); ?></strong></p>
+                <ul style="list-style-type: disc; padding-left: 20px; margin: 10px 0;">
+                    <li><?php esc_html_e( 'Download a complete CSV report to audit IP addresses blocklists offline.', 'uxpa-network-performance-guard' ); ?></li>
+                    <li><?php esc_html_e( 'Clear the logs and reset counter statistics as needed.', 'uxpa-network-performance-guard' ); ?></li>
+                </ul>
+                <?php
+                break;
+
+            case 'security':
+                ?>
+                <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
+                    <span class="dashicons dashicons-shield" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px;"></span>
+                    <?php esc_html_e( 'Security Guide', 'uxpa-network-performance-guard' ); ?>
+                </h3>
+                <p><strong><?php esc_html_e( 'Bot Mitigation', 'uxpa-network-performance-guard' ); ?></strong></p>
+                <p><?php esc_html_e( 'Configure security interceptors to actively drop user-list enumeration queries. Recommended default: keep both parameters enabled.', 'uxpa-network-performance-guard' ); ?></p>
+                <p><strong><?php esc_html_e( 'Email Digests:', 'uxpa-network-performance-guard' ); ?></strong></p>
+                <p><?php esc_html_e( 'Provide a valid administrator username to receive periodic statistics. Email schedules are dispatched using the Action Scheduler queue.', 'uxpa-network-performance-guard' ); ?></p>
+                <?php
+                break;
+
+            case 'cron':
+                ?>
+                <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
+                    <span class="dashicons dashicons-clock" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px;"></span>
+                    <?php esc_html_e( 'Cron Health Guide', 'uxpa-network-performance-guard' ); ?>
+                </h3>
+                <p><strong><?php esc_html_e( 'Avoiding Bloat', 'uxpa-network-performance-guard' ); ?></strong></p>
+                <p><?php esc_html_e( 'Runaway cron tasks pollute the options table, stalling the scheduler daemon. The Duplicate Event Limit automatically prunes repeated executions of identical task hooks.', 'uxpa-network-performance-guard' ); ?></p>
+                <p><strong><?php esc_html_e( 'Manual Purging:', 'uxpa-network-performance-guard' ); ?></strong></p>
+                <p><?php esc_html_e( 'Click "Purge Old Action Logs Now" to instantly delete historic log rows in the Action Scheduler database, freeing up table space.', 'uxpa-network-performance-guard' ); ?></p>
+                <?php
+                break;
+        }
     }
 }
 
