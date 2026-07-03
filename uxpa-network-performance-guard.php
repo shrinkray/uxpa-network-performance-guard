@@ -929,7 +929,15 @@ class UxpaNetworkPerformanceGuard {
                     <tbody>
                         <tr>
                             <td style="padding: 6px 0; border: none;"><strong><?php esc_html_e( 'Version:', 'uxpa-network-performance-guard' ); ?></strong></td>
-                            <td style="padding: 6px 0; border: none; text-align: right;"><?php echo esc_html( '1.4' ); ?></td>
+                            <td style="padding: 6px 0; border: none; text-align: right;">
+                                <?php
+                                if ( ! function_exists( 'get_plugin_data' ) ) {
+                                    require_once ABSPATH . 'wp-admin/includes/plugin.php';
+                                }
+                                $plugin_data = get_plugin_data( __FILE__ );
+                                echo esc_html( isset( $plugin_data['Version'] ) ? $plugin_data['Version'] : '1.4' );
+                                ?>
+                            </td>
                         </tr>
                         <tr>
                             <td style="padding: 6px 0; border: none;"><strong><?php esc_html_e( 'Developer:', 'uxpa-network-performance-guard' ); ?></strong></td>
