@@ -401,12 +401,19 @@ class UxpaNetworkPerformanceGuard {
         }
 
         $active_tab = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'welcome';
+        $valid_tabs = [ 'welcome', 'dashboard', 'security', 'cron' ];
+        if ( ! in_array( $active_tab, $valid_tabs, true ) ) {
+            $active_tab = 'welcome';
+        }
 
         // Process Settings Save
         if ( isset( $_POST['uxpa_guard_save_settings'] ) ) {
             check_admin_referer( 'uxpa_guard_settings_nonce' );
 
             $tab = isset( $_POST['tab_submitted'] ) ? sanitize_key( $_POST['tab_submitted'] ) : 'security';
+            if ( ! in_array( $tab, [ 'security', 'cron' ], true ) ) {
+                $tab = 'security';
+            }
             
             if ( $tab === 'security' ) {
                 $new_settings = [
