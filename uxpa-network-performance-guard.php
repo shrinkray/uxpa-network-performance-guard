@@ -867,6 +867,16 @@ class UxpaNetworkPerformanceGuard {
         <!-- Client-Side Sorter & AJAX Script -->
         <script>
         jQuery(document).ready(function($) {
+            // Localized Translation Strings
+            const txtBlockedAtEdge = <?php echo wp_json_encode( __( 'Blocked at Edge', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtLoggedActive  = <?php echo wp_json_encode( __( 'Logged (Active)', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtRemoveBlock   = <?php echo wp_json_encode( __( 'Remove Block', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtMarkBlocked   = <?php echo wp_json_encode( __( 'Mark Blocked', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtErrOccurred   = <?php echo wp_json_encode( __( 'An error occurred.', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtReqFailed     = <?php echo wp_json_encode( __( 'Request failed. Please try again.', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtCopied        = <?php echo wp_json_encode( __( 'Copied!', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtCopyFail      = <?php echo wp_json_encode( __( 'Could not copy to clipboard. Please copy manually.', 'uxpa-network-performance-guard' ) ); ?>;
+
             // Client-Side Sorting
             $('th.sortable').on('click', function() {
                 const th = $(this);
@@ -900,14 +910,19 @@ class UxpaNetworkPerformanceGuard {
                     let valA = a.cells[columnIndex] ? a.cells[columnIndex].innerText.trim() : '';
                     let valB = b.cells[columnIndex] ? b.cells[columnIndex].innerText.trim() : '';
 
-                    // For IP sorting
+                    // For IP sorting (with IPv6 fallback)
                     if (type === 'ip') {
                         const ipToNum = ip => {
                             const clean = ip.replace(/[^0-9.]/g, '').split('.');
-                            if (clean.length !== 4) return 0;
+                            if (clean.length !== 4) return null;
                             return clean.reduce((acc, octet) => (acc * 256) + parseInt(octet, 10), 0);
                         };
-                        return asc ? ipToNum(valA) - ipToNum(valB) : ipToNum(valB) - ipToNum(valA);
+                        const numA = ipToNum(valA);
+                        const numB = ipToNum(valB);
+                        if (numA === null || numB === null) {
+                            return asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                        }
+                        return asc ? numA - numB : numB - numA;
                     }
 
                     // For numeric sorting
@@ -957,20 +972,20 @@ class UxpaNetworkPerformanceGuard {
                         // Update the Copy Assistant in the sidebar
                         updateCopyAssistant(blockedIps);
                     } else {
-                        alert(response.data.message || 'An error occurred.');
+                        alert(response.data.message || txtErrOccurred);
                     }
                 }).fail(function() {
                     btn.prop('disabled', false).removeClass('updating');
-                    alert('Request failed. Please try again.');
+                    alert(txtReqFailed);
                 });
             });
 
             function updateIPStatusUI(ip, isBlocked) {
                 const badgeHtml = isBlocked 
-                    ? '<span class="badge cf-blocked-badge">Blocked at Edge</span>'
-                    : '<span class="badge cf-active-badge">Logged (Active)</span>';
+                    ? '<span class="badge cf-blocked-badge">' + txtBlockedAtEdge + '</span>'
+                    : '<span class="badge cf-active-badge">' + txtLoggedActive + '</span>';
                     
-                const btnText = isBlocked ? 'Remove Block' : 'Mark Blocked';
+                const btnText = isBlocked ? txtRemoveBlock : txtMarkBlocked;
                 const btnClass = isBlocked ? 'button button-secondary' : 'button button-primary-outline';
                 
                 $('tr').each(function() {
@@ -1016,24 +1031,30 @@ class UxpaNetworkPerformanceGuard {
                 textarea.select();
                 textarea.setSelectionRange(0, 99999); // For mobile devices
 
-                try {
-                    navigator.clipboard.writeText(textarea.value).then(() => {
-                        const copyBtn = $('#copy-cf-list');
-                        const origHtml = copyBtn.html();
-                        copyBtn.html('<span class="dashicons dashicons-yes"></span> Copied!').addClass('button-success');
-                        setTimeout(() => {
-                            copyBtn.html(origHtml).removeClass('button-success');
-                        }, 2000);
-                    });
-                } catch (err) {
-                    // Fallback
-                    document.execCommand('copy');
+                const triggerSuccessUI = () => {
                     const copyBtn = $('#copy-cf-list');
                     const origHtml = copyBtn.html();
-                    copyBtn.html('<span class="dashicons dashicons-yes"></span> Copied!').addClass('button-success');
+                    copyBtn.html('<span class="dashicons dashicons-yes"></span> ' + txtCopied).addClass('button-success');
                     setTimeout(() => {
                         copyBtn.html(origHtml).removeClass('button-success');
                     }, 2000);
+                };
+
+                const fallbackCopy = () => {
+                    try {
+                        document.execCommand('copy');
+                        triggerSuccessUI();
+                    } catch (err) {
+                        alert(txtCopyFail);
+                    }
+                };
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(textarea.value)
+                        .then(triggerSuccessUI)
+                        .catch(fallbackCopy);
+                } else {
+                    fallbackCopy();
                 }
             });
         });
