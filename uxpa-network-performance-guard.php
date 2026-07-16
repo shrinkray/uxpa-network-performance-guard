@@ -316,22 +316,28 @@ class UxpaNetworkPerformanceGuard {
 
         $this->update_guard_option( $option_key, $blocked_ips );
 
-        $edge_blocked_ips = $this->get_guard_option( 'uxpa_network_guard_cloudflare_blocked_ips', [] );
-        $webhost_blocked_ips = $this->get_guard_option( 'uxpa_network_guard_webhost_blocked_ips', [] );
-        if ( ! is_array( $edge_blocked_ips ) ) {
-            $edge_blocked_ips = [];
-        }
-        if ( ! is_array( $webhost_blocked_ips ) ) {
-            $webhost_blocked_ips = [];
-        }
-
         wp_send_json_success( [
             'ip'                  => $ip,
             'block_type'          => $block_type,
             'is_blocked'          => $is_blocked,
-            'edge_blocked_ips'    => $edge_blocked_ips,
-            'webhost_blocked_ips' => $webhost_blocked_ips,
+            'edge_blocked_ips'    => $this->get_normalized_ip_list( 'uxpa_network_guard_cloudflare_blocked_ips' ),
+            'webhost_blocked_ips' => $this->get_normalized_ip_list( 'uxpa_network_guard_webhost_blocked_ips' ),
         ] );
+    }
+
+    /**
+     * Returns a zero-based array of valid IP strings so JSON encoding always
+     * produces a JS array (associative/sparse keys would encode as an object).
+     */
+    private function get_normalized_ip_list( string $option_key ): array {
+        $ips = $this->get_guard_option( $option_key, [] );
+        if ( ! is_array( $ips ) ) {
+            return [];
+        }
+
+        return array_values( array_filter( $ips, static function ( $ip ) {
+            return is_string( $ip ) && filter_var( $ip, FILTER_VALIDATE_IP );
+        } ) );
     }
 
     private function get_ip_block_status_html( string $ip, array $edge_ips, array $host_ips ): string {
@@ -1146,7 +1152,8 @@ class UxpaNetworkPerformanceGuard {
                 } else {
                     emptyMsg.hide();
                     textarea.show();
-                    copyBtn.show();
+                    // The button markup relies on flex centering; .show() would restore inline-block.
+                    copyBtn.css('display', 'flex');
                 }
             }
 
