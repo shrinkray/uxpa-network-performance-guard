@@ -301,10 +301,8 @@ class UxpaNetworkPerformanceGuard {
             wp_send_json_error( [ 'message' => __( 'Invalid IP address.', 'uxpa-network-performance-guard' ) ] );
         }
 
-        $blocked_ips = $this->get_guard_option( $option_key, [] );
-        if ( ! is_array( $blocked_ips ) ) {
-            $blocked_ips = [];
-        }
+        // Normalizing here also purges any invalid stored entries on write.
+        $blocked_ips = $this->get_normalized_ip_list( $option_key );
 
         $is_blocked = false;
         if ( in_array( $ip, $blocked_ips, true ) ) {
@@ -673,15 +671,8 @@ class UxpaNetworkPerformanceGuard {
             }
         }
 
-        $cloudflare_blocked_ips = $this->get_guard_option( 'uxpa_network_guard_cloudflare_blocked_ips', [] );
-        if ( ! is_array( $cloudflare_blocked_ips ) ) {
-            $cloudflare_blocked_ips = [];
-        }
-
-        $webhost_blocked_ips = $this->get_guard_option( 'uxpa_network_guard_webhost_blocked_ips', [] );
-        if ( ! is_array( $webhost_blocked_ips ) ) {
-            $webhost_blocked_ips = [];
-        }
+        $cloudflare_blocked_ips = $this->get_normalized_ip_list( 'uxpa_network_guard_cloudflare_blocked_ips' );
+        $webhost_blocked_ips    = $this->get_normalized_ip_list( 'uxpa_network_guard_webhost_blocked_ips' );
 
         // Aggregate Top Offending IPs from the log entries
         $top_offenders = [];
@@ -1547,14 +1538,8 @@ class UxpaNetworkPerformanceGuard {
                 break;
 
             case 'dashboard':
-                $cf_blocked_ips = $this->get_guard_option( 'uxpa_network_guard_cloudflare_blocked_ips', [] );
-                if ( ! is_array( $cf_blocked_ips ) ) {
-                    $cf_blocked_ips = [];
-                }
-                $host_blocked_ips = $this->get_guard_option( 'uxpa_network_guard_webhost_blocked_ips', [] );
-                if ( ! is_array( $host_blocked_ips ) ) {
-                    $host_blocked_ips = [];
-                }
+                $cf_blocked_ips   = $this->get_normalized_ip_list( 'uxpa_network_guard_cloudflare_blocked_ips' );
+                $host_blocked_ips = $this->get_normalized_ip_list( 'uxpa_network_guard_webhost_blocked_ips' );
                 $cf_ips_text = implode( "\n", $cf_blocked_ips );
                 $host_ips_text = implode( "\n", $host_blocked_ips );
                 ?>
