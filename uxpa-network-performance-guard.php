@@ -42,8 +42,9 @@ class UxpaNetworkPerformanceGuard {
         add_action( 'uxpa_guard_send_scheduled_report', [ $this, 'send_scheduled_report' ] );
         add_action( 'admin_init', [ $this, 'handle_csv_export' ] );
 
-        // 6. AJAX Action for Toggling Cloudflare IPs
+        // 6. AJAX Actions for Toggling Edge and Web Host Block Lists
         add_action( 'wp_ajax_uxpa_toggle_cloudflare_blocked', [ $this, 'ajax_toggle_cloudflare_blocked' ] );
+        add_action( 'wp_ajax_uxpa_toggle_webhost_blocked', [ $this, 'ajax_toggle_webhost_blocked' ] );
     }
 
     private function check_activation_context(): void {
@@ -274,6 +275,20 @@ class UxpaNetworkPerformanceGuard {
     }
 
     public function ajax_toggle_cloudflare_blocked(): void {
+        $this->ajax_toggle_blocked_ip_list(
+            'uxpa_network_guard_cloudflare_blocked_ips',
+            'edge'
+        );
+    }
+
+    public function ajax_toggle_webhost_blocked(): void {
+        $this->ajax_toggle_blocked_ip_list(
+            'uxpa_network_guard_webhost_blocked_ips',
+            'host'
+        );
+    }
+
+    private function ajax_toggle_blocked_ip_list( string $option_key, string $block_type ): void {
         check_ajax_referer( 'uxpa_guard_ajax_nonce', 'nonce' );
 
         $can_manage = $this->is_network_active ? current_user_can( 'manage_network_options' ) : current_user_can( 'manage_options' );
@@ -286,10 +301,8 @@ class UxpaNetworkPerformanceGuard {
             wp_send_json_error( [ 'message' => __( 'Invalid IP address.', 'uxpa-network-performance-guard' ) ] );
         }
 
-        $blocked_ips = $this->get_guard_option( 'uxpa_network_guard_cloudflare_blocked_ips', [] );
-        if ( ! is_array( $blocked_ips ) ) {
-            $blocked_ips = [];
-        }
+        // Normalizing here also purges any invalid stored entries on write.
+        $blocked_ips = $this->get_normalized_ip_list( $option_key );
 
         $is_blocked = false;
         if ( in_array( $ip, $blocked_ips, true ) ) {
@@ -299,13 +312,85 @@ class UxpaNetworkPerformanceGuard {
             $is_blocked = true;
         }
 
-        $this->update_guard_option( 'uxpa_network_guard_cloudflare_blocked_ips', $blocked_ips );
+        $this->update_guard_option( $option_key, $blocked_ips );
 
         wp_send_json_success( [
-            'ip'         => $ip,
-            'is_blocked' => $is_blocked,
-            'blocked_ips'=> $blocked_ips,
+            'ip'                  => $ip,
+            'block_type'          => $block_type,
+            'is_blocked'          => $is_blocked,
+            'edge_blocked_ips'    => $this->get_normalized_ip_list( 'uxpa_network_guard_cloudflare_blocked_ips' ),
+            'webhost_blocked_ips' => $this->get_normalized_ip_list( 'uxpa_network_guard_webhost_blocked_ips' ),
         ] );
+    }
+
+    /**
+     * Returns a zero-based array of valid IP strings so JSON encoding always
+     * produces a JS array (associative/sparse keys would encode as an object).
+     */
+    private function get_normalized_ip_list( string $option_key ): array {
+        $ips = $this->get_guard_option( $option_key, [] );
+        if ( ! is_array( $ips ) ) {
+            return [];
+        }
+
+        return array_values( array_filter( $ips, static function ( $ip ) {
+            return is_string( $ip ) && filter_var( $ip, FILTER_VALIDATE_IP );
+        } ) );
+    }
+
+    private function get_ip_block_status_html( string $ip, array $edge_ips, array $host_ips ): string {
+        $is_edge_blocked = in_array( $ip, $edge_ips, true );
+        $is_host_blocked = in_array( $ip, $host_ips, true );
+
+        if ( ! $is_edge_blocked && ! $is_host_blocked ) {
+            return '<span class="badge cf-active-badge">' . esc_html__( 'Logged (Active)', 'uxpa-network-performance-guard' ) . '</span>';
+        }
+
+        $html = '<div class="block-status-badges" style="display: flex; flex-direction: column; gap: 4px;">';
+        if ( $is_edge_blocked ) {
+            $html .= '<span class="badge cf-blocked-badge">' . esc_html__( 'Blocked at Edge', 'uxpa-network-performance-guard' ) . '</span>';
+        }
+        if ( $is_host_blocked ) {
+            $html .= '<span class="badge host-blocked-badge">' . esc_html__( 'Blocked at Web Host', 'uxpa-network-performance-guard' ) . '</span>';
+        }
+        $html .= '</div>';
+
+        return $html;
+    }
+
+    private function get_ip_block_actions_html( string $ip, array $edge_ips, array $host_ips ): string {
+        $is_edge_blocked = in_array( $ip, $edge_ips, true );
+        $is_host_blocked = in_array( $ip, $host_ips, true );
+
+        $edge_btn_class = $is_edge_blocked ? 'button button-secondary' : 'button button-primary-outline';
+        $edge_btn_text  = $is_edge_blocked
+            ? __( 'Remove Edge Block', 'uxpa-network-performance-guard' )
+            : __( 'Mark Edge Block', 'uxpa-network-performance-guard' );
+
+        $host_btn_class = $is_host_blocked ? 'button button-secondary' : 'button button-primary-outline';
+        $host_btn_text  = $is_host_blocked
+            ? __( 'Remove Host Block', 'uxpa-network-performance-guard' )
+            : __( 'Mark Host Block', 'uxpa-network-performance-guard' );
+
+        return sprintf(
+            '<div class="block-actions" style="display: flex; flex-direction: column; gap: 4px;">
+                <button type="button" class="uxpa-toggle-cloudflare %1$s" data-ip="%2$s">%3$s</button>
+                <button type="button" class="uxpa-toggle-webhost %4$s" data-ip="%2$s">%5$s</button>
+            </div>',
+            esc_attr( $edge_btn_class ),
+            esc_attr( $ip ),
+            esc_html( $edge_btn_text ),
+            esc_attr( $host_btn_class ),
+            esc_html( $host_btn_text )
+        );
+    }
+
+    private function get_ip_row_block_class( string $ip, array $edge_ips, array $host_ips ): string {
+        if ( in_array( $ip, $edge_ips, true ) || in_array( $ip, $host_ips, true ) ) {
+            return 'row-ip-blocked';
+        }
+
+        return '';
     }
 
     private function reschedule_report_cron( string $interval ): void {
@@ -586,10 +671,8 @@ class UxpaNetworkPerformanceGuard {
             }
         }
 
-        $cloudflare_blocked_ips = $this->get_guard_option( 'uxpa_network_guard_cloudflare_blocked_ips', [] );
-        if ( ! is_array( $cloudflare_blocked_ips ) ) {
-            $cloudflare_blocked_ips = [];
-        }
+        $cloudflare_blocked_ips = $this->get_normalized_ip_list( 'uxpa_network_guard_cloudflare_blocked_ips' );
+        $webhost_blocked_ips    = $this->get_normalized_ip_list( 'uxpa_network_guard_webhost_blocked_ips' );
 
         // Aggregate Top Offending IPs from the log entries
         $top_offenders = [];
@@ -679,6 +762,17 @@ class UxpaNetworkPerformanceGuard {
                 font-weight: 500 !important;
                 display: inline-block;
             }
+            .host-blocked-badge {
+                background: #fef3e2 !important;
+                color: #996800 !important;
+                border: 1px solid #f0d78c !important;
+                padding: 3px 8px !important;
+                border-radius: 4px !important;
+                font-size: 11px !important;
+                font-weight: 500 !important;
+                display: inline-block;
+            }
+            .row-ip-blocked,
             .row-cf-blocked {
                 background-color: #fdfafb !important;
                 opacity: 0.85;
@@ -696,6 +790,10 @@ class UxpaNetworkPerformanceGuard {
             .updating {
                 opacity: 0.5 !important;
                 pointer-events: none !important;
+            }
+            .block-actions .button {
+                width: 100%;
+                text-align: center;
             }
             .button-success {
                 background: #46b450 !important;
@@ -748,8 +846,8 @@ class UxpaNetworkPerformanceGuard {
                         <th class="sortable desc" data-type="number" style="width: 10%;"><?php esc_html_e( 'Hits Count', 'uxpa-network-performance-guard' ); ?></th>
                         <th class="sortable" data-type="date" style="width: 20%;"><?php esc_html_e( 'First Intercepted', 'uxpa-network-performance-guard' ); ?></th>
                         <th class="sortable" data-type="date" style="width: 20%;"><?php esc_html_e( 'Last Intercepted', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="sortable" data-type="string" style="width: 18%;"><?php esc_html_e( 'Edge Block Status', 'uxpa-network-performance-guard' ); ?></th>
-                        <th style="width: 12%;"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable" data-type="string" style="width: 16%;"><?php esc_html_e( 'Block Status', 'uxpa-network-performance-guard' ); ?></th>
+                        <th style="width: 16%;"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -758,9 +856,8 @@ class UxpaNetworkPerformanceGuard {
                             <td colspan="6"><?php esc_html_e( 'No statistics recorded yet.', 'uxpa-network-performance-guard' ); ?></td>
                         </tr>
                     <?php else : ?>
-                        <?php foreach ( $top_offenders as $offender ) : 
-                            $is_blocked = in_array( $offender['ip'], $cloudflare_blocked_ips, true );
-                            $row_class = $is_blocked ? 'row-cf-blocked' : '';
+                        <?php foreach ( $top_offenders as $offender ) :
+                            $row_class = $this->get_ip_row_block_class( $offender['ip'], $cloudflare_blocked_ips, $webhost_blocked_ips );
                             ?>
                             <tr class="<?php echo esc_attr( $row_class ); ?>">
                                 <td>
@@ -772,19 +869,11 @@ class UxpaNetworkPerformanceGuard {
                                 <td><strong><?php echo esc_html( $offender['hits'] ); ?></strong></td>
                                 <td><?php echo esc_html( date_i18n( 'Y-m-d H:i:s', $offender['first_seen'] ) ); ?></td>
                                 <td><?php echo esc_html( date_i18n( 'Y-m-d H:i:s', $offender['last_seen'] ) ); ?></td>
-                                <td class="cloudflare-status-cell">
-                                    <?php if ( $is_blocked ) : ?>
-                                        <span class="badge cf-blocked-badge"><?php esc_html_e( 'Blocked at Edge', 'uxpa-network-performance-guard' ); ?></span>
-                                    <?php else : ?>
-                                        <span class="badge cf-active-badge"><?php esc_html_e( 'Logged (Active)', 'uxpa-network-performance-guard' ); ?></span>
-                                    <?php endif; ?>
+                                <td class="block-status-cell">
+                                    <?php echo $this->get_ip_block_status_html( $offender['ip'], $cloudflare_blocked_ips, $webhost_blocked_ips ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                 </td>
                                 <td>
-                                    <?php if ( $is_blocked ) : ?>
-                                        <button type="button" class="uxpa-toggle-cloudflare button button-secondary" data-ip="<?php echo esc_attr( $offender['ip'] ); ?>"><?php esc_html_e( 'Remove Block', 'uxpa-network-performance-guard' ); ?></button>
-                                    <?php else : ?>
-                                        <button type="button" class="uxpa-toggle-cloudflare button button-primary-outline" data-ip="<?php echo esc_attr( $offender['ip'] ); ?>"><?php esc_html_e( 'Mark Blocked', 'uxpa-network-performance-guard' ); ?></button>
-                                    <?php endif; ?>
+                                    <?php echo $this->get_ip_block_actions_html( $offender['ip'], $cloudflare_blocked_ips, $webhost_blocked_ips ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
@@ -806,8 +895,8 @@ class UxpaNetworkPerformanceGuard {
                         <th class="sortable" data-type="ip" style="width: 15%;"><?php esc_html_e( 'IP Address', 'uxpa-network-performance-guard' ); ?></th>
                         <th class="sortable" data-type="string" style="width: 12%;"><?php esc_html_e( 'Block Type', 'uxpa-network-performance-guard' ); ?></th>
                         <th class="sortable" data-type="string" style="width: <?php echo is_multisite() ? '24%' : '36%'; ?>;"><?php esc_html_e( 'Target Query / Route', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="sortable" data-type="string" style="width: 12%;"><?php esc_html_e( 'Edge Block Status', 'uxpa-network-performance-guard' ); ?></th>
-                        <th style="width: 10%;"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable" data-type="string" style="width: 12%;"><?php esc_html_e( 'Block Status', 'uxpa-network-performance-guard' ); ?></th>
+                        <th style="width: 14%;"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -816,9 +905,8 @@ class UxpaNetworkPerformanceGuard {
                             <td colspan="<?php echo is_multisite() ? 7 : 6; ?>"><?php esc_html_e( 'No blocked harvesting attempts recorded yet.', 'uxpa-network-performance-guard' ); ?></td>
                         </tr>
                     <?php else : ?>
-                        <?php foreach ( $recent_logs as $entry ) : 
-                            $is_blocked = in_array( $entry['ip'], $cloudflare_blocked_ips, true );
-                            $row_class = $is_blocked ? 'row-cf-blocked' : '';
+                        <?php foreach ( $recent_logs as $entry ) :
+                            $row_class = $this->get_ip_row_block_class( $entry['ip'], $cloudflare_blocked_ips, $webhost_blocked_ips );
                             ?>
                             <tr class="<?php echo esc_attr( $row_class ); ?>">
                                 <td><?php echo esc_html( date_i18n( 'Y-m-d H:i:s', $entry['timestamp'] ) ); ?></td>
@@ -843,19 +931,11 @@ class UxpaNetworkPerformanceGuard {
                                     </span>
                                 </td>
                                 <td><code><?php echo esc_html( $entry['target'] ); ?></code></td>
-                                <td class="cloudflare-status-cell">
-                                    <?php if ( $is_blocked ) : ?>
-                                        <span class="badge cf-blocked-badge"><?php esc_html_e( 'Blocked at Edge', 'uxpa-network-performance-guard' ); ?></span>
-                                    <?php else : ?>
-                                        <span class="badge cf-active-badge"><?php esc_html_e( 'Logged (Active)', 'uxpa-network-performance-guard' ); ?></span>
-                                    <?php endif; ?>
+                                <td class="block-status-cell">
+                                    <?php echo $this->get_ip_block_status_html( $entry['ip'], $cloudflare_blocked_ips, $webhost_blocked_ips ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                 </td>
                                 <td>
-                                    <?php if ( $is_blocked ) : ?>
-                                        <button type="button" class="uxpa-toggle-cloudflare button button-secondary" data-ip="<?php echo esc_attr( $entry['ip'] ); ?>"><?php esc_html_e( 'Remove Block', 'uxpa-network-performance-guard' ); ?></button>
-                                    <?php else : ?>
-                                        <button type="button" class="uxpa-toggle-cloudflare button button-primary-outline" data-ip="<?php echo esc_attr( $entry['ip'] ); ?>"><?php esc_html_e( 'Mark Blocked', 'uxpa-network-performance-guard' ); ?></button>
-                                    <?php endif; ?>
+                                    <?php echo $this->get_ip_block_actions_html( $entry['ip'], $cloudflare_blocked_ips, $webhost_blocked_ips ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
@@ -869,9 +949,12 @@ class UxpaNetworkPerformanceGuard {
         jQuery(document).ready(function($) {
             // Localized Translation Strings
             const txtBlockedAtEdge = <?php echo wp_json_encode( __( 'Blocked at Edge', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtLoggedActive  = <?php echo wp_json_encode( __( 'Logged (Active)', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtRemoveBlock   = <?php echo wp_json_encode( __( 'Remove Block', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtMarkBlocked   = <?php echo wp_json_encode( __( 'Mark Blocked', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtBlockedAtHost = <?php echo wp_json_encode( __( 'Blocked at Web Host', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtLoggedActive    = <?php echo wp_json_encode( __( 'Logged (Active)', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtMarkEdgeBlock   = <?php echo wp_json_encode( __( 'Mark Edge Block', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtRemoveEdgeBlock = <?php echo wp_json_encode( __( 'Remove Edge Block', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtMarkHostBlock   = <?php echo wp_json_encode( __( 'Mark Host Block', 'uxpa-network-performance-guard' ) ); ?>;
+            const txtRemoveHostBlock = <?php echo wp_json_encode( __( 'Remove Host Block', 'uxpa-network-performance-guard' ) ); ?>;
             const txtErrOccurred   = <?php echo wp_json_encode( __( 'An error occurred.', 'uxpa-network-performance-guard' ) ); ?>;
             const txtReqFailed     = <?php echo wp_json_encode( __( 'Request failed. Please try again.', 'uxpa-network-performance-guard' ) ); ?>;
             const txtCopied        = <?php echo wp_json_encode( __( 'Copied!', 'uxpa-network-performance-guard' ) ); ?>;
@@ -947,69 +1030,108 @@ class UxpaNetworkPerformanceGuard {
                 rows.forEach(row => tbody.appendChild(row));
             }
 
-            // AJAX Toggle Cloudflare Block
-            $(document).on('click', '.uxpa-toggle-cloudflare', function(e) {
-                e.preventDefault();
-                const btn = $(this);
+            function handleBlockToggle(btn, action) {
                 const ip = btn.data('ip');
                 const nonce = $('#uxpa_guard_ajax_nonce').val();
+                const row = btn.closest('tr');
 
-                btn.prop('disabled', true).addClass('updating');
+                row.find('.block-actions .button').prop('disabled', true).addClass('updating');
 
                 $.post(ajaxurl, {
-                    action: 'uxpa_toggle_cloudflare_blocked',
+                    action: action,
                     ip: ip,
                     nonce: nonce
                 }, function(response) {
-                    btn.prop('disabled', false).removeClass('updating');
+                    row.find('.block-actions .button').prop('disabled', false).removeClass('updating');
                     if (response.success) {
-                        const isBlocked = response.data.is_blocked;
-                        const blockedIps = response.data.blocked_ips;
-                        
-                        // Update UI for this IP everywhere on the page
-                        updateIPStatusUI(ip, isBlocked);
-                        
-                        // Update the Copy Assistant in the sidebar
-                        updateCopyAssistant(blockedIps);
+                        refreshBlockUI(response.data.edge_blocked_ips, response.data.webhost_blocked_ips);
                     } else {
                         alert(response.data.message || txtErrOccurred);
                     }
                 }).fail(function() {
-                    btn.prop('disabled', false).removeClass('updating');
+                    row.find('.block-actions .button').prop('disabled', false).removeClass('updating');
                     alert(txtReqFailed);
-                });
-            });
-
-            function updateIPStatusUI(ip, isBlocked) {
-                const badgeHtml = isBlocked 
-                    ? '<span class="badge cf-blocked-badge">' + txtBlockedAtEdge + '</span>'
-                    : '<span class="badge cf-active-badge">' + txtLoggedActive + '</span>';
-                    
-                const btnText = isBlocked ? txtRemoveBlock : txtMarkBlocked;
-                const btnClass = isBlocked ? 'button button-secondary' : 'button button-primary-outline';
-                
-                $('tr').each(function() {
-                    const row = $(this);
-                    const ipCode = row.find('code.ip-address');
-                    if (ipCode.length && ipCode.text().trim() === ip) {
-                        row.find('.cloudflare-status-cell').html(badgeHtml);
-                        const toggleBtn = row.find('.uxpa-toggle-cloudflare');
-                        toggleBtn.text(btnText).attr('class', 'uxpa-toggle-cloudflare ' + btnClass);
-                        
-                        if (isBlocked) {
-                            row.addClass('row-cf-blocked');
-                        } else {
-                            row.removeClass('row-cf-blocked');
-                        }
-                    }
                 });
             }
 
-            function updateCopyAssistant(blockedIps) {
-                const textarea = $('#cf-blocked-list-text');
-                const badge = $('#cf-blocked-count-badge');
-                const emptyMsg = $('#cf-empty-msg');
-                const copyBtn = $('#copy-cf-list');
+            $(document).on('click', '.uxpa-toggle-cloudflare', function(e) {
+                e.preventDefault();
+                handleBlockToggle($(this), 'uxpa_toggle_cloudflare_blocked');
+            });
+
+            $(document).on('click', '.uxpa-toggle-webhost', function(e) {
+                e.preventDefault();
+                handleBlockToggle($(this), 'uxpa_toggle_webhost_blocked');
+            });
+
+            function buildStatusHtml(edgeBlocked, hostBlocked) {
+                if (!edgeBlocked && !hostBlocked) {
+                    return '<span class="badge cf-active-badge">' + txtLoggedActive + '</span>';
+                }
+
+                let html = '<div class="block-status-badges" style="display: flex; flex-direction: column; gap: 4px;">';
+                if (edgeBlocked) {
+                    html += '<span class="badge cf-blocked-badge">' + txtBlockedAtEdge + '</span>';
+                }
+                if (hostBlocked) {
+                    html += '<span class="badge host-blocked-badge">' + txtBlockedAtHost + '</span>';
+                }
+                html += '</div>';
+                return html;
+            }
+
+            function buildActionsHtml(ip, edgeBlocked, hostBlocked) {
+                const edgeBtnClass = edgeBlocked ? 'button button-secondary' : 'button button-primary-outline';
+                const edgeBtnText = edgeBlocked ? txtRemoveEdgeBlock : txtMarkEdgeBlock;
+                const hostBtnClass = hostBlocked ? 'button button-secondary' : 'button button-primary-outline';
+                const hostBtnText = hostBlocked ? txtRemoveHostBlock : txtMarkHostBlock;
+
+                return '<div class="block-actions" style="display: flex; flex-direction: column; gap: 4px;">' +
+                    '<button type="button" class="uxpa-toggle-cloudflare ' + edgeBtnClass + '" data-ip="' + ip + '">' + edgeBtnText + '</button>' +
+                    '<button type="button" class="uxpa-toggle-webhost ' + hostBtnClass + '" data-ip="' + ip + '">' + hostBtnText + '</button>' +
+                    '</div>';
+            }
+
+            function refreshBlockUI(edgeBlockedIps, hostBlockedIps) {
+                $('tr').each(function() {
+                    const row = $(this);
+                    if (!row.find('.block-status-cell').length) {
+                        return;
+                    }
+
+                    const ipCode = row.find('code.ip-address');
+                    if (!ipCode.length) {
+                        return;
+                    }
+
+                    const ip = ipCode.text().trim();
+                    const edgeBlocked = edgeBlockedIps.indexOf(ip) !== -1;
+                    const hostBlocked = hostBlockedIps.indexOf(ip) !== -1;
+
+                    row.find('.block-status-cell').html(buildStatusHtml(edgeBlocked, hostBlocked));
+                    row.find('td:has(.block-actions)').html(buildActionsHtml(ip, edgeBlocked, hostBlocked));
+
+                    if (edgeBlocked || hostBlocked) {
+                        row.addClass('row-ip-blocked');
+                    } else {
+                        row.removeClass('row-ip-blocked row-cf-blocked');
+                    }
+                });
+
+                updateCopyAssistant('cf', edgeBlockedIps);
+                updateCopyAssistant('host', hostBlockedIps);
+            }
+
+            function updateCopyAssistant(type, blockedIps) {
+                const prefix = type === 'host' ? 'host' : 'cf';
+                const textarea = $('#' + prefix + '-blocked-list-text');
+                const badge = $('#' + prefix + '-blocked-count-badge');
+                const emptyMsg = $('#' + prefix + '-empty-msg');
+                const copyBtn = $('#copy-' + prefix + '-list');
+
+                if (!textarea.length) {
+                    return;
+                }
 
                 textarea.val(blockedIps.join('\n'));
                 badge.text(blockedIps.length);
@@ -1021,18 +1143,20 @@ class UxpaNetworkPerformanceGuard {
                 } else {
                     emptyMsg.hide();
                     textarea.show();
-                    copyBtn.show();
+                    // The button markup relies on flex centering; .show() would restore inline-block.
+                    copyBtn.css('display', 'flex');
                 }
             }
 
-            // Copy to Clipboard Assistant
-            $(document).on('click', '#copy-cf-list', function() {
-                const textarea = document.getElementById('cf-blocked-list-text');
+            // Copy to Clipboard Assistants
+            $(document).on('click', '#copy-cf-list, #copy-host-list', function() {
+                const listId = $(this).attr('id') === 'copy-host-list' ? 'host-blocked-list-text' : 'cf-blocked-list-text';
+                const textarea = document.getElementById(listId);
                 textarea.select();
-                textarea.setSelectionRange(0, 99999); // For mobile devices
+                textarea.setSelectionRange(0, 99999);
 
                 const triggerSuccessUI = () => {
-                    const copyBtn = $('#copy-cf-list');
+                    const copyBtn = $(this);
                     const origHtml = copyBtn.html();
                     copyBtn.html('<span class="dashicons dashicons-yes"></span> ' + txtCopied).addClass('button-success');
                     setTimeout(() => {
@@ -1043,18 +1167,25 @@ class UxpaNetworkPerformanceGuard {
                 const fallbackCopy = () => {
                     try {
                         document.execCommand('copy');
-                        triggerSuccessUI();
+                        triggerSuccessUI.call(this);
                     } catch (err) {
                         alert(txtCopyFail);
                     }
                 };
 
+                const copyBtn = $(this);
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(textarea.value)
-                        .then(triggerSuccessUI)
-                        .catch(fallbackCopy);
+                        .then(() => {
+                            const origHtml = copyBtn.html();
+                            copyBtn.html('<span class="dashicons dashicons-yes"></span> ' + txtCopied).addClass('button-success');
+                            setTimeout(() => {
+                                copyBtn.html(origHtml).removeClass('button-success');
+                            }, 2000);
+                        })
+                        .catch(fallbackCopy.bind(copyBtn));
                 } else {
-                    fallbackCopy();
+                    fallbackCopy.call(copyBtn[0]);
                 }
             });
         });
@@ -1407,23 +1538,22 @@ class UxpaNetworkPerformanceGuard {
                 break;
 
             case 'dashboard':
-                $cf_blocked_ips = $this->get_guard_option( 'uxpa_network_guard_cloudflare_blocked_ips', [] );
-                if ( ! is_array( $cf_blocked_ips ) ) {
-                    $cf_blocked_ips = [];
-                }
-                $ips_text = implode( "\n", $cf_blocked_ips );
+                $cf_blocked_ips   = $this->get_normalized_ip_list( 'uxpa_network_guard_cloudflare_blocked_ips' );
+                $host_blocked_ips = $this->get_normalized_ip_list( 'uxpa_network_guard_webhost_blocked_ips' );
+                $cf_ips_text = implode( "\n", $cf_blocked_ips );
+                $host_ips_text = implode( "\n", $host_blocked_ips );
                 ?>
                 <div class="cloudflare-assistant-card" style="margin-bottom: 25px; padding-bottom: 20px; border-bottom: 1px solid #eee;">
                     <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px; color: #d63638;">
                         <span class="dashicons dashicons-shield-alt" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #d63638;"></span>
-                        <?php esc_html_e( 'Cloudflare Block Assistant', 'uxpa-network-performance-guard' ); ?>
+                        <?php esc_html_e( 'Edge Block Assistant', 'uxpa-network-performance-guard' ); ?>
                     </h3>
                     <p style="font-size: 13px; line-height: 1.4; color: #50575e;">
-                        <?php esc_html_e( 'Flag worst-offending IPs in the tables to add them to this edge block list. Copy and paste this list directly into Cloudflare WAF or WPEngine.', 'uxpa-network-performance-guard' ); ?>
+                        <?php esc_html_e( 'Flag worst-offending IPs with "Mark Edge Block" to add them to this list. Copy and paste into Cloudflare WAF or your CDN firewall.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                     
                     <div style="margin: 15px 0 10px 0;">
-                        <strong><?php esc_html_e( 'Flagged IPs:', 'uxpa-network-performance-guard' ); ?> 
+                        <strong><?php esc_html_e( 'Edge-Blocked IPs:', 'uxpa-network-performance-guard' ); ?> 
                             <span id="cf-blocked-count-badge" style="background: #d63638; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 5px;">
                                 <?php echo count( $cf_blocked_ips ); ?>
                             </span>
@@ -1431,14 +1561,43 @@ class UxpaNetworkPerformanceGuard {
                     </div>
 
                     <p id="cf-empty-msg" style="font-style: italic; color: #8c8f94; font-size: 13px; display: <?php echo empty( $cf_blocked_ips ) ? 'block' : 'none'; ?>;">
-                        <?php esc_html_e( 'No IPs flagged yet. Click "Mark Blocked" on the offending IPs table to populate.', 'uxpa-network-performance-guard' ); ?>
+                        <?php esc_html_e( 'No edge blocks flagged yet. Click "Mark Edge Block" on an offending IP to populate.', 'uxpa-network-performance-guard' ); ?>
                     </p>
 
-                    <textarea id="cf-blocked-list-text" readonly style="width: 100%; height: 120px; font-family: monospace; font-size: 12px; line-height: 1.4; padding: 8px; background: #f6f7f7; border: 1px solid #8c8f94; border-radius: 4px; resize: none; box-sizing: border-box; display: <?php echo empty( $cf_blocked_ips ) ? 'none' : 'block'; ?>;"><?php echo esc_textarea( $ips_text ); ?></textarea>
+                    <textarea id="cf-blocked-list-text" readonly style="width: 100%; height: 120px; font-family: monospace; font-size: 12px; line-height: 1.4; padding: 8px; background: #f6f7f7; border: 1px solid #8c8f94; border-radius: 4px; resize: none; box-sizing: border-box; display: <?php echo empty( $cf_blocked_ips ) ? 'none' : 'block'; ?>;"><?php echo esc_textarea( $cf_ips_text ); ?></textarea>
                     
                     <button type="button" id="copy-cf-list" class="button button-secondary" style="width: 100%; margin-top: 10px; display: <?php echo empty( $cf_blocked_ips ) ? 'none' : 'flex'; ?>; justify-content: center; align-items: center; gap: 5px;">
                         <span class="dashicons dashicons-admin-page" style="font-size: 16px; width: 16px; height: 16px; margin-top: 3px;"></span>
-                        <?php esc_html_e( 'Copy IP List to Clipboard', 'uxpa-network-performance-guard' ); ?>
+                        <?php esc_html_e( 'Copy Edge IP List', 'uxpa-network-performance-guard' ); ?>
+                    </button>
+                </div>
+
+                <div class="webhost-assistant-card" style="margin-bottom: 25px; padding-bottom: 20px; border-bottom: 1px solid #eee;">
+                    <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px; color: #996800;">
+                        <span class="dashicons dashicons-admin-site-alt3" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #996800;"></span>
+                        <?php esc_html_e( 'Web Host Block Assistant', 'uxpa-network-performance-guard' ); ?>
+                    </h3>
+                    <p style="font-size: 13px; line-height: 1.4; color: #50575e;">
+                        <?php esc_html_e( 'If you block at the web host instead of (or in addition to) the edge, flag IPs with "Mark Host Block". Copy this list into WPEngine, cPanel, or your host firewall.', 'uxpa-network-performance-guard' ); ?>
+                    </p>
+                    
+                    <div style="margin: 15px 0 10px 0;">
+                        <strong><?php esc_html_e( 'Host-Blocked IPs:', 'uxpa-network-performance-guard' ); ?> 
+                            <span id="host-blocked-count-badge" style="background: #996800; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 5px;">
+                                <?php echo count( $host_blocked_ips ); ?>
+                            </span>
+                        </strong>
+                    </div>
+
+                    <p id="host-empty-msg" style="font-style: italic; color: #8c8f94; font-size: 13px; display: <?php echo empty( $host_blocked_ips ) ? 'block' : 'none'; ?>;">
+                        <?php esc_html_e( 'No host blocks flagged yet. Click "Mark Host Block" on an offending IP to populate.', 'uxpa-network-performance-guard' ); ?>
+                    </p>
+
+                    <textarea id="host-blocked-list-text" readonly style="width: 100%; height: 120px; font-family: monospace; font-size: 12px; line-height: 1.4; padding: 8px; background: #f6f7f7; border: 1px solid #8c8f94; border-radius: 4px; resize: none; box-sizing: border-box; display: <?php echo empty( $host_blocked_ips ) ? 'none' : 'block'; ?>;"><?php echo esc_textarea( $host_ips_text ); ?></textarea>
+                    
+                    <button type="button" id="copy-host-list" class="button button-secondary" style="width: 100%; margin-top: 10px; display: <?php echo empty( $host_blocked_ips ) ? 'none' : 'flex'; ?>; justify-content: center; align-items: center; gap: 5px;">
+                        <span class="dashicons dashicons-admin-page" style="font-size: 16px; width: 16px; height: 16px; margin-top: 3px;"></span>
+                        <?php esc_html_e( 'Copy Host IP List', 'uxpa-network-performance-guard' ); ?>
                     </button>
                 </div>
 

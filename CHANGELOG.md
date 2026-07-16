@@ -2,6 +2,16 @@
 
 All notable changes to the **UXPA Network Performance & Guard** plugin will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Added independent web-host IP block tracking alongside edge blocking.
+- Added separate edge and web-host status badges, toggle actions, counters, and copyable IP lists to the security dashboard.
+
+### Fixed
+- Normalized stored block lists before rendering and returning AJAX responses so only valid IP addresses are displayed and JSON lists remain consistently encoded as arrays.
+- Preserved flex alignment when dynamically showing block-list copy buttons.
+
 ## [1.4] - 2026-07-03
 
 ### Added
