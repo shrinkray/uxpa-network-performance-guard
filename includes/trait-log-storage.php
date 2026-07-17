@@ -31,8 +31,20 @@ trait UxpaNetworkPerformanceGuardLogStorage {
         }
 
         $this->install_log_table();
+
+        // Leave the stored version behind so the upgrade retries if dbDelta failed.
+        if ( ! $this->log_table_exists() ) {
+            return;
+        }
+
         $this->migrate_legacy_option_logs();
         $this->update_guard_option( self::DB_VERSION_KEY, self::DB_VERSION );
+    }
+
+    private function log_table_exists(): bool {
+        global $wpdb;
+        $table = $this->get_log_table();
+        return $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table;
     }
 
     private function install_log_table(): void {
@@ -60,20 +72,28 @@ trait UxpaNetworkPerformanceGuardLogStorage {
 
     /**
      * Copy legacy option logs into the table, then remove the old telemetry rows.
+     * Legacy options are only deleted once the table exists and every insert
+     * succeeded, so telemetry survives failed migrations for a later retry.
      */
     private function migrate_legacy_option_logs(): void {
         global $wpdb;
 
+        if ( ! $this->log_table_exists() ) {
+            return;
+        }
+
+        $table            = $this->get_log_table();
+        $migration_failed = false;
+
         $legacy_logs = $this->get_guard_option( self::LOGS_KEY, [] );
         if ( is_array( $legacy_logs ) && ! empty( $legacy_logs ) ) {
-            $table = $this->get_log_table();
             foreach ( array_reverse( $legacy_logs ) as $entry ) {
                 if ( ! is_array( $entry ) ) {
                     continue;
                 }
 
                 $timestamp = isset( $entry['timestamp'] ) ? (int) $entry['timestamp'] : time();
-                $wpdb->insert(
+                $inserted  = $wpdb->insert(
                     $table,
                     [
                         'blocked_at' => gmdate( 'Y-m-d H:i:s', $timestamp ),
@@ -84,7 +104,15 @@ trait UxpaNetworkPerformanceGuardLogStorage {
                     ],
                     [ '%s', '%s', '%s', '%s', '%d' ]
                 );
+
+                if ( false === $inserted ) {
+                    $migration_failed = true;
+                }
             }
+        }
+
+        if ( $migration_failed ) {
+            return;
         }
 
         if ( $this->is_network_active ) {
@@ -99,6 +127,12 @@ trait UxpaNetworkPerformanceGuardLogStorage {
     }
 
     public function maybe_schedule_prune(): void {
+        // Cron events are per-site; on network activation the shared table only
+        // needs one prune schedule, owned by the main site.
+        if ( $this->is_network_active && ! is_main_site() ) {
+            return;
+        }
+
         if ( ! wp_next_scheduled( self::PRUNE_HOOK ) ) {
             wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', self::PRUNE_HOOK );
         }

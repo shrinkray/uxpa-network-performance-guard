@@ -59,7 +59,8 @@ class UxpaNetworkPerformanceGuard {
         add_action( 'wp_ajax_uxpa_toggle_webhost_blocked', [ $this, 'ajax_toggle_webhost_blocked' ] );
 
         // 7. Log storage: ensure the custom table exists/upgrades, and prune on a daily schedule.
-        add_action( 'admin_init', [ $this, 'maybe_upgrade_db' ] );
+        // Runs on plugins_loaded so the table exists before front-end logging on setup_theme.
+        add_action( 'plugins_loaded', [ $this, 'maybe_upgrade_db' ] );
         add_action( 'init', [ $this, 'maybe_schedule_prune' ] );
         add_action( self::PRUNE_HOOK, [ $this, 'prune_old_logs' ] );
     }
@@ -87,7 +88,7 @@ class UxpaNetworkPerformanceGuard {
             'uxpa-network-guard-admin',
             plugin_dir_url( __FILE__ ) . 'assets/css/admin-dashboard.css',
             [],
-            (string) filemtime( $css_path )
+            file_exists( $css_path ) ? (string) filemtime( $css_path ) : null
         );
 
         if ( $tab !== 'dashboard' ) {
@@ -99,7 +100,7 @@ class UxpaNetworkPerformanceGuard {
             'uxpa-network-guard-dashboard',
             plugin_dir_url( __FILE__ ) . 'assets/js/admin-dashboard.js',
             [ 'jquery' ],
-            (string) filemtime( $js_path ),
+            file_exists( $js_path ) ? (string) filemtime( $js_path ) : null,
             true
         );
         wp_localize_script(
@@ -193,7 +194,13 @@ class UxpaNetworkPerformanceGuard {
     private function log_blocked_attempt( string $type, string $target ): void {
         $ip = $_SERVER['REMOTE_ADDR'] ?? 'Unknown';
         if ( isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
-            $ip = sanitize_text_field( $_SERVER['HTTP_X_FORWARDED_FOR'] );
+            // The header can hold a comma-separated proxy chain; keep only the
+            // originating client address, and only when it is a valid IP.
+            $forwarded = explode( ',', sanitize_text_field( $_SERVER['HTTP_X_FORWARDED_FOR'] ) );
+            $candidate = trim( $forwarded[0] );
+            if ( filter_var( $candidate, FILTER_VALIDATE_IP ) ) {
+                $ip = $candidate;
+            }
         }
 
         // Single indexed INSERT: keeps the front-end path off preloaded option storage.
