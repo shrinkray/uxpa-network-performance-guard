@@ -12,6 +12,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 trait UxpaNetworkPerformanceGuardLogStorage {
 
+    /** Per-request cache: once the table is confirmed present it stays present. */
+    private $log_table_verified = false;
+
     /**
      * Resolve the log table name. Network-active installs share one table on the
      * base prefix; single-site installs use the site prefix.
@@ -42,9 +45,18 @@ trait UxpaNetworkPerformanceGuardLogStorage {
     }
 
     private function log_table_exists(): bool {
+        if ( $this->log_table_verified ) {
+            return true;
+        }
+
         global $wpdb;
         $table = $this->get_log_table();
-        return $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table;
+        // esc_like() escapes _ and % so the LIKE pattern matches this exact
+        // table name instead of similarly named tables.
+        $found = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+
+        $this->log_table_verified = ( $found === $table );
+        return $this->log_table_verified;
     }
 
     private function install_log_table(): void {
@@ -74,6 +86,10 @@ trait UxpaNetworkPerformanceGuardLogStorage {
      * Copy legacy option logs into the table, then remove the old telemetry rows.
      * Legacy options are only deleted once the table exists and every insert
      * succeeded, so telemetry survives failed migrations for a later retry.
+     *
+     * The legacy cumulative counter and daily stats covered far more events than
+     * the capped log array, so their surplus (beyond the rows migrated here) is
+     * preserved as small offset options that the stat getters add back in.
      */
     private function migrate_legacy_option_logs(): void {
         global $wpdb;
@@ -84,6 +100,8 @@ trait UxpaNetworkPerformanceGuardLogStorage {
 
         $table            = $this->get_log_table();
         $migration_failed = false;
+        $migrated_total   = 0;
+        $migrated_by_day  = [];
 
         $legacy_logs = $this->get_guard_option( self::LOGS_KEY, [] );
         if ( is_array( $legacy_logs ) && ! empty( $legacy_logs ) ) {
@@ -107,12 +125,37 @@ trait UxpaNetworkPerformanceGuardLogStorage {
 
                 if ( false === $inserted ) {
                     $migration_failed = true;
+                    continue;
                 }
+
+                $migrated_total++;
+                $day = gmdate( 'Y-m-d', $timestamp );
+                $migrated_by_day[ $day ] = ( $migrated_by_day[ $day ] ?? 0 ) + 1;
             }
         }
 
         if ( $migration_failed ) {
             return;
+        }
+
+        $legacy_count = (int) $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
+        $count_offset = max( 0, $legacy_count - $migrated_total );
+        if ( $count_offset > 0 ) {
+            $this->update_guard_option( 'uxpa_network_guard_legacy_blocked_count', $count_offset );
+        }
+
+        $legacy_daily  = $this->get_guard_option( 'uxpa_network_guard_daily_stats', [] );
+        $daily_offsets = [];
+        if ( is_array( $legacy_daily ) ) {
+            foreach ( $legacy_daily as $day => $count ) {
+                $surplus = max( 0, (int) $count - ( $migrated_by_day[ $day ] ?? 0 ) );
+                if ( $surplus > 0 ) {
+                    $daily_offsets[ (string) $day ] = $surplus;
+                }
+            }
+        }
+        if ( ! empty( $daily_offsets ) ) {
+            $this->update_guard_option( 'uxpa_network_guard_legacy_daily_stats', $daily_offsets );
         }
 
         if ( $this->is_network_active ) {
@@ -165,13 +208,19 @@ trait UxpaNetworkPerformanceGuardLogStorage {
     }
 
     /**
-     * Return recent rows in the legacy renderer shape.
+     * Return recent rows in the legacy renderer shape. An empty list is returned
+     * when the table is missing so admin pages and exports still render.
      */
-    private function get_recent_logs( int $limit = 50 ): array {
+    private function get_recent_logs( int $limit = 50, int $offset = 0 ): array {
         global $wpdb;
+
+        if ( ! $this->log_table_exists() ) {
+            return [];
+        }
+
         $table = $this->get_log_table();
         // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        $rows = $wpdb->get_results( $wpdb->prepare( "SELECT blocked_at, ip, block_type, target, blog_id FROM {$table} ORDER BY blocked_at DESC, id DESC LIMIT %d", $limit ) );
+        $rows = $wpdb->get_results( $wpdb->prepare( "SELECT blocked_at, ip, block_type, target, blog_id FROM {$table} ORDER BY blocked_at DESC, id DESC LIMIT %d OFFSET %d", $limit, $offset ) );
 
         $logs = [];
         if ( is_array( $rows ) ) {
@@ -190,17 +239,43 @@ trait UxpaNetworkPerformanceGuardLogStorage {
 
     private function get_total_blocked_count(): int {
         global $wpdb;
+
+        if ( ! $this->log_table_exists() ) {
+            return 0;
+        }
+
         $table = $this->get_log_table();
         // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        return (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+        $count = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+
+        // Events counted before the table migration only survive as an offset.
+        return $count + (int) $this->get_guard_option( 'uxpa_network_guard_legacy_blocked_count', 0 );
     }
 
     private function get_blocked_count_since( int $days ): int {
         global $wpdb;
+
+        if ( ! $this->log_table_exists() ) {
+            return 0;
+        }
+
         $table  = $this->get_log_table();
         $cutoff = gmdate( 'Y-m-d H:i:s', time() - ( $days * DAY_IN_SECONDS ) );
         // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        return (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE blocked_at >= %s", $cutoff ) );
+        $count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE blocked_at >= %s", $cutoff ) );
+
+        // Fold in pre-migration daily counts still inside the window.
+        $legacy_daily = $this->get_guard_option( 'uxpa_network_guard_legacy_daily_stats', [] );
+        if ( is_array( $legacy_daily ) && ! empty( $legacy_daily ) ) {
+            $cutoff_day = substr( $cutoff, 0, 10 );
+            foreach ( $legacy_daily as $day => $daily_count ) {
+                if ( (string) $day >= $cutoff_day ) {
+                    $count += (int) $daily_count;
+                }
+            }
+        }
+
+        return $count;
     }
 
     /**
@@ -208,6 +283,11 @@ trait UxpaNetworkPerformanceGuardLogStorage {
      */
     private function get_top_offenders( int $limit = 20 ): array {
         global $wpdb;
+
+        if ( ! $this->log_table_exists() ) {
+            return [];
+        }
+
         $table = $this->get_log_table();
         // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
         $rows = $wpdb->get_results( $wpdb->prepare(
@@ -235,9 +315,21 @@ trait UxpaNetworkPerformanceGuardLogStorage {
 
     private function clear_logs(): void {
         global $wpdb;
-        $table = $this->get_log_table();
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        $wpdb->query( "TRUNCATE TABLE {$table}" );
+
+        if ( $this->log_table_exists() ) {
+            $table = $this->get_log_table();
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $wpdb->query( "TRUNCATE TABLE {$table}" );
+        }
+
+        // Clearing also resets any pre-migration counter offsets.
+        if ( $this->is_network_active ) {
+            delete_site_option( 'uxpa_network_guard_legacy_blocked_count' );
+            delete_site_option( 'uxpa_network_guard_legacy_daily_stats' );
+        } else {
+            delete_option( 'uxpa_network_guard_legacy_blocked_count' );
+            delete_option( 'uxpa_network_guard_legacy_daily_stats' );
+        }
     }
 
     public function activate(): void {

@@ -282,8 +282,6 @@ class UxpaNetworkPerformanceGuard {
             wp_die( 'Permission denied.' );
         }
 
-        $logs = $this->get_recent_logs( 1000 );
-
         header( 'Content-Type: text/csv; charset=utf-8' );
         header( 'Content-Disposition: attachment; filename="uxpa-security-intercept-report-' . date( 'Y-m-d' ) . '.csv"' );
         
@@ -295,21 +293,30 @@ class UxpaNetworkPerformanceGuard {
         }
         fputcsv( $output, $headers );
 
-        foreach ( $logs as $entry ) {
-            $row = [
-                date( 'Y-m-d H:i:s', $entry['timestamp'] ),
-                $entry['ip'],
-                $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter',
-                $entry['target']
-            ];
-            if ( is_multisite() ) {
-                $blog_id = $entry['blog_id'] ?? 1;
-                $details = get_blog_details( $blog_id );
-                $sub_site = $details ? $details->blogname : "Site #{$blog_id}";
-                array_splice( $row, 1, 0, $sub_site );
+        // Stream all retained rows in batches so busy sites get a complete export.
+        $batch_size = 1000;
+        $offset     = 0;
+        do {
+            $logs = $this->get_recent_logs( $batch_size, $offset );
+
+            foreach ( $logs as $entry ) {
+                $row = [
+                    date( 'Y-m-d H:i:s', $entry['timestamp'] ),
+                    $entry['ip'],
+                    $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter',
+                    $entry['target']
+                ];
+                if ( is_multisite() ) {
+                    $blog_id = $entry['blog_id'] ?? 1;
+                    $details = get_blog_details( $blog_id );
+                    $sub_site = $details ? $details->blogname : "Site #{$blog_id}";
+                    array_splice( $row, 1, 0, $sub_site );
+                }
+                fputcsv( $output, $row );
             }
-            fputcsv( $output, $row );
-        }
+
+            $offset += $batch_size;
+        } while ( count( $logs ) === $batch_size );
 
         fclose( $output );
         exit;
