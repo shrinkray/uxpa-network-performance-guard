@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UXPA Network Performance & Guard
  * Description: Intercepts user enumeration attempts early and prevents cron option data pollution.
- * Version: 1.4
+ * Version: 1.5
  * Author: Greg Miller for UXPA International
  * Author URI: https://shrinkraylabs.com
  * Text Domain: uxpa-network-performance-guard
@@ -11,10 +11,21 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+require_once __DIR__ . '/includes/trait-log-storage.php';
+
 class UxpaNetworkPerformanceGuard {
+
+    use UxpaNetworkPerformanceGuardLogStorage;
 
     private const SETTINGS_KEY = 'uxpa_network_guard_settings';
     private const LOGS_KEY     = 'uxpa_network_guard_blocked_log';
+
+    // Dedicated log table (keeps high-volume telemetry out of autoloaded/preloaded option storage).
+    private const DB_VERSION_KEY = 'uxpa_network_guard_db_version';
+    private const DB_VERSION      = '1';
+    private const TABLE_BASENAME  = 'uxpa_security_logs';
+    private const RETENTION_DAYS  = 90;
+    private const PRUNE_HOOK       = 'uxpa_guard_prune_logs';
 
     private $settings = [];
     private $is_network_active = false;
@@ -33,6 +44,7 @@ class UxpaNetworkPerformanceGuard {
         // 3. Register settings page
         add_action( 'admin_menu', [ $this, 'register_admin_settings_page' ] );
         add_action( 'network_admin_menu', [ $this, 'register_network_settings_page' ] );
+        add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 
         // 4. Action Scheduler optimizations
         add_filter( 'action_scheduler_retention_period', [ $this, 'set_action_scheduler_retention' ] );
@@ -45,6 +57,12 @@ class UxpaNetworkPerformanceGuard {
         // 6. AJAX Actions for Toggling Edge and Web Host Block Lists
         add_action( 'wp_ajax_uxpa_toggle_cloudflare_blocked', [ $this, 'ajax_toggle_cloudflare_blocked' ] );
         add_action( 'wp_ajax_uxpa_toggle_webhost_blocked', [ $this, 'ajax_toggle_webhost_blocked' ] );
+
+        // 7. Log storage: ensure the custom table exists/upgrades, and prune on a daily schedule.
+        // Runs on plugins_loaded so the table exists before front-end logging on setup_theme.
+        add_action( 'plugins_loaded', [ $this, 'maybe_upgrade_db' ] );
+        add_action( 'init', [ $this, 'maybe_schedule_prune' ] );
+        add_action( self::PRUNE_HOOK, [ $this, 'prune_old_logs' ] );
     }
 
     private function check_activation_context(): void {
@@ -55,6 +73,57 @@ class UxpaNetworkPerformanceGuard {
                 $this->is_network_active = true;
             }
         }
+    }
+
+    public function enqueue_admin_assets(): void {
+        $page = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : '';
+        if ( $page !== 'uxpa-performance-guard' ) {
+            return;
+        }
+
+        $tab      = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'welcome';
+        $css_path = __DIR__ . '/assets/css/admin-dashboard.css';
+
+        wp_enqueue_style(
+            'uxpa-network-guard-admin',
+            plugin_dir_url( __FILE__ ) . 'assets/css/admin-dashboard.css',
+            [],
+            file_exists( $css_path ) ? (string) filemtime( $css_path ) : null
+        );
+
+        if ( $tab !== 'dashboard' ) {
+            return;
+        }
+
+        $js_path = __DIR__ . '/assets/js/admin-dashboard.js';
+        wp_enqueue_script(
+            'uxpa-network-guard-dashboard',
+            plugin_dir_url( __FILE__ ) . 'assets/js/admin-dashboard.js',
+            [ 'jquery' ],
+            file_exists( $js_path ) ? (string) filemtime( $js_path ) : null,
+            true
+        );
+        wp_localize_script(
+            'uxpa-network-guard-dashboard',
+            'uxpaNetworkGuard',
+            [
+                'ajaxUrl' => admin_url( 'admin-ajax.php' ),
+                'nonce'   => wp_create_nonce( 'uxpa_guard_ajax_nonce' ),
+                'i18n'    => [
+                    'blockedAtEdge'   => __( 'Blocked at Edge', 'uxpa-network-performance-guard' ),
+                    'blockedAtHost'   => __( 'Blocked at Web Host', 'uxpa-network-performance-guard' ),
+                    'loggedActive'    => __( 'Logged (Active)', 'uxpa-network-performance-guard' ),
+                    'markEdgeBlock'   => __( 'Mark Edge Block', 'uxpa-network-performance-guard' ),
+                    'removeEdgeBlock' => __( 'Remove Edge Block', 'uxpa-network-performance-guard' ),
+                    'markHostBlock'   => __( 'Mark Host Block', 'uxpa-network-performance-guard' ),
+                    'removeHostBlock' => __( 'Remove Host Block', 'uxpa-network-performance-guard' ),
+                    'errorOccurred'   => __( 'An error occurred.', 'uxpa-network-performance-guard' ),
+                    'requestFailed'   => __( 'Request failed. Please try again.', 'uxpa-network-performance-guard' ),
+                    'copied'          => __( 'Copied!', 'uxpa-network-performance-guard' ),
+                    'copyFailed'      => __( 'Could not copy to clipboard. Please copy manually.', 'uxpa-network-performance-guard' ),
+                ],
+            ]
+        );
     }
 
     private function get_guard_option( string $key, $default = [] ) {
@@ -123,47 +192,19 @@ class UxpaNetworkPerformanceGuard {
     }
 
     private function log_blocked_attempt( string $type, string $target ): void {
-        $logs = $this->get_guard_option( self::LOGS_KEY, [] );
-        if ( ! is_array( $logs ) ) {
-            $logs = [];
-        }
-
         $ip = $_SERVER['REMOTE_ADDR'] ?? 'Unknown';
         if ( isset( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
-            $ip = sanitize_text_field( $_SERVER['HTTP_X_FORWARDED_FOR'] );
+            // The header can hold a comma-separated proxy chain; keep only the
+            // originating client address, and only when it is a valid IP.
+            $forwarded = explode( ',', sanitize_text_field( $_SERVER['HTTP_X_FORWARDED_FOR'] ) );
+            $candidate = trim( $forwarded[0] );
+            if ( filter_var( $candidate, FILTER_VALIDATE_IP ) ) {
+                $ip = $candidate;
+            }
         }
 
-        $new_entry = [
-            'timestamp' => time(),
-            'ip'        => $ip,
-            'type'      => $type,
-            'target'    => sanitize_text_field( $target ),
-            'blog_id'   => get_current_blog_id(),
-        ];
-
-        array_unshift( $logs, $new_entry );
-        $logs = array_slice( $logs, 0, 50 ); // Store up to 50 logs for reporting
-        $this->update_guard_option( self::LOGS_KEY, $logs );
-        
-        // Update a simple counter
-        $count = (int) $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
-        $this->update_guard_option( 'uxpa_network_guard_blocked_count', $count + 1 );
-
-        // Track daily stats
-        $daily_stats = $this->get_guard_option( 'uxpa_network_guard_daily_stats', [] );
-        if ( ! is_array( $daily_stats ) ) {
-            $daily_stats = [];
-        }
-        $today = date( 'Y-m-d' );
-        if ( ! isset( $daily_stats[ $today ] ) ) {
-            $daily_stats[ $today ] = 0;
-        }
-        $daily_stats[ $today ]++;
-
-        // Prune daily stats older than 30 entries
-        krsort( $daily_stats );
-        $daily_stats = array_slice( $daily_stats, 0, 30, true );
-        $this->update_guard_option( 'uxpa_network_guard_daily_stats', $daily_stats );
+        // Single indexed INSERT: keeps the front-end path off preloaded option storage.
+        $this->insert_log_entry( $type, sanitize_text_field( $target ), $ip );
     }
 
     public function set_action_scheduler_retention(): int {
@@ -241,10 +282,8 @@ class UxpaNetworkPerformanceGuard {
             wp_die( 'Permission denied.' );
         }
 
-        $logs = $this->get_guard_option( self::LOGS_KEY, [] );
-
         header( 'Content-Type: text/csv; charset=utf-8' );
-        header( 'Content-Disposition: attachment; filename="uxpa-security-intercept-report-' . date( 'Y-m-d' ) . '.csv"' );
+        header( 'Content-Disposition: attachment; filename="uxpa-security-intercept-report-' . date_i18n( 'Y-m-d' ) . '.csv"' );
         
         $output = fopen( 'php://output', 'w' );
         
@@ -254,21 +293,30 @@ class UxpaNetworkPerformanceGuard {
         }
         fputcsv( $output, $headers );
 
-        foreach ( $logs as $entry ) {
-            $row = [
-                date( 'Y-m-d H:i:s', $entry['timestamp'] ),
-                $entry['ip'],
-                $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter',
-                $entry['target']
-            ];
-            if ( is_multisite() ) {
-                $blog_id = $entry['blog_id'] ?? 1;
-                $details = get_blog_details( $blog_id );
-                $sub_site = $details ? $details->blogname : "Site #{$blog_id}";
-                array_splice( $row, 1, 0, $sub_site );
+        // Stream all retained rows in batches so busy sites get a complete export.
+        $batch_size = 1000;
+        $offset     = 0;
+        do {
+            $logs = $this->get_recent_logs( $batch_size, $offset );
+
+            foreach ( $logs as $entry ) {
+                $row = [
+                    date_i18n( 'Y-m-d H:i:s', $entry['timestamp'] ),
+                    $entry['ip'],
+                    $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter',
+                    $entry['target']
+                ];
+                if ( is_multisite() ) {
+                    $blog_id = $entry['blog_id'] ?? 1;
+                    $details = get_blog_details( $blog_id );
+                    $sub_site = $details ? $details->blogname : "Site #{$blog_id}";
+                    array_splice( $row, 1, 0, $sub_site );
+                }
+                fputcsv( $output, $row );
             }
-            fputcsv( $output, $row );
-        }
+
+            $offset += $batch_size;
+        } while ( count( $logs ) === $batch_size );
 
         fclose( $output );
         exit;
@@ -346,7 +394,7 @@ class UxpaNetworkPerformanceGuard {
             return '<span class="badge cf-active-badge">' . esc_html__( 'Logged (Active)', 'uxpa-network-performance-guard' ) . '</span>';
         }
 
-        $html = '<div class="block-status-badges" style="display: flex; flex-direction: column; gap: 4px;">';
+        $html = '<div class="block-status-badges">';
         if ( $is_edge_blocked ) {
             $html .= '<span class="badge cf-blocked-badge">' . esc_html__( 'Blocked at Edge', 'uxpa-network-performance-guard' ) . '</span>';
         }
@@ -373,7 +421,7 @@ class UxpaNetworkPerformanceGuard {
             : __( 'Mark Host Block', 'uxpa-network-performance-guard' );
 
         return sprintf(
-            '<div class="block-actions" style="display: flex; flex-direction: column; gap: 4px;">
+            '<div class="block-actions">
                 <button type="button" class="uxpa-toggle-cloudflare %1$s" data-ip="%2$s">%3$s</button>
                 <button type="button" class="uxpa-toggle-webhost %4$s" data-ip="%2$s">%5$s</button>
             </div>',
@@ -416,25 +464,11 @@ class UxpaNetworkPerformanceGuard {
         $to = $user->user_email;
         $subject = '[' . get_option( 'blogname' ) . '] UXPA Security & Performance Guard Report';
 
-        $total_intercepted = (int) $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
-        
-        $daily_stats = $this->get_guard_option( 'uxpa_network_guard_daily_stats', [] );
-        $seven_days_total = 0;
-        $thirty_days_total = 0;
-        $idx = 0;
-        if ( is_array( $daily_stats ) ) {
-            foreach ( $daily_stats as $date => $count ) {
-                if ( $idx < 7 ) {
-                    $seven_days_total += $count;
-                }
-                if ( $idx < 30 ) {
-                    $thirty_days_total += $count;
-                }
-                $idx++;
-            }
-        }
+        $total_intercepted = $this->get_total_blocked_count();
+        $seven_days_total  = $this->get_blocked_count_since( 7 );
+        $thirty_days_total = $this->get_blocked_count_since( 30 );
 
-        $logs = $this->get_guard_option( self::LOGS_KEY, [] );
+        $logs = $this->get_recent_logs( 15 );
         $logs_html = '';
         if ( empty( $logs ) ) {
             $logs_html = '<p>No security blocks logged recently.</p>';
@@ -452,7 +486,7 @@ class UxpaNetworkPerformanceGuard {
             
             $display_logs = array_slice( $logs, 0, 15 );
             foreach ( $display_logs as $entry ) {
-                $time = date( 'Y-m-d H:i:s', $entry['timestamp'] );
+                $time = date_i18n( 'Y-m-d H:i:s', $entry['timestamp'] );
                 $ip = esc_html( $entry['ip'] );
                 $type = $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter';
                 $target = esc_html( $entry['target'] );
@@ -588,9 +622,7 @@ class UxpaNetworkPerformanceGuard {
         // Process Settings Reset
         if ( isset( $_POST['uxpa_guard_reset_logs'] ) ) {
             check_admin_referer( 'uxpa_guard_settings_nonce' );
-            $this->update_guard_option( self::LOGS_KEY, [] );
-            $this->update_guard_option( 'uxpa_network_guard_blocked_count', 0 );
-            $this->update_guard_option( 'uxpa_network_guard_daily_stats', [] );
+            $this->clear_logs();
             echo '<div class="notice notice-info is-dismissible"><p><strong>' . esc_html__( 'Interception counters and logs cleared.', 'uxpa-network-performance-guard' ) . '</strong></p></div>';
         }
 
@@ -622,8 +654,8 @@ class UxpaNetworkPerformanceGuard {
                 <a href="<?php echo esc_url( add_query_arg( 'tab', 'cron', $base_url ) ); ?>" class="nav-tab <?php echo $active_tab === 'cron' ? 'nav-tab-active' : ''; ?>"><?php esc_html_e( 'Cron Health', 'uxpa-network-performance-guard' ); ?></a>
             </h2>
 
-            <div class="settings-container-two-columns" style="display: flex; gap: 30px; margin-top: 20px; align-items: flex-start;">
-                <div class="main-settings-content" style="flex: 3; min-width: 0;">
+            <div class="settings-container-two-columns uxpa-settings-layout">
+                <div class="main-settings-content uxpa-settings-main">
                     <?php
                     switch ( $active_tab ) {
                         case 'welcome':
@@ -642,7 +674,7 @@ class UxpaNetworkPerformanceGuard {
                     ?>
                 </div>
 
-                <div class="sidebar-settings-guide" style="flex: 1; min-width: 280px; max-width: 360px; background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; box-shadow: 0 1px 1px rgba(0,0,0,.04); box-sizing: border-box;">
+                <div class="sidebar-settings-guide uxpa-settings-sidebar">
                     <?php $this->render_sidebar_guide( $active_tab ); ?>
                 </div>
             </div>
@@ -651,54 +683,21 @@ class UxpaNetworkPerformanceGuard {
     }
 
     private function render_dashboard_tab(): void {
-        $blocked_count = $this->get_guard_option( 'uxpa_network_guard_blocked_count', 0 );
-        $recent_logs   = $this->get_guard_option( self::LOGS_KEY, [] );
-        
-        // Calculate 7-day and 30-day statistics
-        $daily_stats = $this->get_guard_option( 'uxpa_network_guard_daily_stats', [] );
-        $seven_days_total = 0;
-        $thirty_days_total = 0;
-        $idx = 0;
-        if ( is_array( $daily_stats ) ) {
-            foreach ( $daily_stats as $date => $count ) {
-                if ( $idx < 7 ) {
-                    $seven_days_total += $count;
-                }
-                if ( $idx < 30 ) {
-                    $thirty_days_total += $count;
-                }
-                $idx++;
-            }
-        }
+        $blocked_count = $this->get_total_blocked_count();
+        $recent_logs   = $this->get_recent_logs( 50 );
+
+        // 7-day and 30-day statistics (counted directly in the log table).
+        $seven_days_total  = $this->get_blocked_count_since( 7 );
+        $thirty_days_total = $this->get_blocked_count_since( 30 );
 
         $cloudflare_blocked_ips = $this->get_normalized_ip_list( 'uxpa_network_guard_cloudflare_blocked_ips' );
         $webhost_blocked_ips    = $this->get_normalized_ip_list( 'uxpa_network_guard_webhost_blocked_ips' );
 
-        // Aggregate Top Offending IPs from the log entries
-        $top_offenders = [];
-        if ( is_array( $recent_logs ) ) {
-            foreach ( $recent_logs as $entry ) {
-                $ip = $entry['ip'];
-                if ( ! isset( $top_offenders[ $ip ] ) ) {
-                    $top_offenders[ $ip ] = [
-                        'ip'         => $ip,
-                        'hits'       => 0,
-                        'first_seen' => $entry['timestamp'],
-                        'last_seen'  => $entry['timestamp'],
-                    ];
-                }
-                $top_offenders[ $ip ]['hits']++;
-                if ( $entry['timestamp'] < $top_offenders[ $ip ]['first_seen'] ) {
-                    $top_offenders[ $ip ]['first_seen'] = $entry['timestamp'];
-                }
-                if ( $entry['timestamp'] > $top_offenders[ $ip ]['last_seen'] ) {
-                    $top_offenders[ $ip ]['last_seen'] = $entry['timestamp'];
-                }
-            }
-        }
-        
+        // Aggregate the worst-offending IPs across all retained rows via SQL.
+        $top_offenders = $this->get_top_offenders( 20 );
+
         // Sort top offenders by hits count descending, then by last_seen descending
-        uasort( $top_offenders, function( $a, $b ) {
+        usort( $top_offenders, function( $a, $b ) {
             if ( $a['hits'] === $b['hits'] ) {
                 return $b['last_seen'] <=> $a['last_seen'];
             }
@@ -706,130 +705,36 @@ class UxpaNetworkPerformanceGuard {
         } );
 
         $csv_export_url = wp_nonce_url( admin_url( 'index.php?action=uxpa_export_csv' ), 'uxpa_export_csv_nonce' );
-        $ajax_nonce = wp_create_nonce( 'uxpa_guard_ajax_nonce' );
         ?>
-        <!-- Include Nonce for JS -->
-        <input type="hidden" id="uxpa_guard_ajax_nonce" value="<?php echo esc_attr( $ajax_nonce ); ?>" />
 
-        <!-- Styles for Sorting, Badges, and Toggle Actions -->
-        <style>
-            th.sortable {
-                cursor: pointer;
-                position: relative;
-                user-select: none;
-                transition: background 0.15s ease;
-                padding: 10px 12px !important;
-                white-space: nowrap;
-            }
-            th.sortable:hover {
-                background: #f0f0f1 !important;
-                color: #2271b1 !important;
-            }
-            th.sortable::after {
-                content: ' ↕';
-                opacity: 0.3;
-                font-size: 10px;
-                margin-left: 5px;
-                display: inline-block;
-            }
-            th.sortable.asc::after {
-                content: ' ▲';
-                opacity: 0.9;
-                color: #2271b1;
-            }
-            th.sortable.desc::after {
-                content: ' ▼';
-                opacity: 0.9;
-                color: #2271b1;
-            }
-            .cf-blocked-badge {
-                background: #fbe8e8 !important;
-                color: #ba1a1a !important;
-                border: 1px solid #f8c2c2 !important;
-                padding: 3px 8px !important;
-                border-radius: 4px !important;
-                font-size: 11px !important;
-                font-weight: 500 !important;
-                display: inline-block;
-            }
-            .cf-active-badge {
-                background: #e7f4ec !important;
-                color: #0f5132 !important;
-                border: 1px solid #badbcc !important;
-                padding: 3px 8px !important;
-                border-radius: 4px !important;
-                font-size: 11px !important;
-                font-weight: 500 !important;
-                display: inline-block;
-            }
-            .host-blocked-badge {
-                background: #fef3e2 !important;
-                color: #996800 !important;
-                border: 1px solid #f0d78c !important;
-                padding: 3px 8px !important;
-                border-radius: 4px !important;
-                font-size: 11px !important;
-                font-weight: 500 !important;
-                display: inline-block;
-            }
-            .row-ip-blocked,
-            .row-cf-blocked {
-                background-color: #fdfafb !important;
-                opacity: 0.85;
-            }
-            .button-primary-outline {
-                background: transparent !important;
-                border-color: #2271b1 !important;
-                color: #2271b1 !important;
-                transition: all 0.2s ease !important;
-            }
-            .button-primary-outline:hover {
-                background: #2271b1 !important;
-                color: #fff !important;
-            }
-            .updating {
-                opacity: 0.5 !important;
-                pointer-events: none !important;
-            }
-            .block-actions .button {
-                width: 100%;
-                text-align: center;
-            }
-            .button-success {
-                background: #46b450 !important;
-                border-color: #46b450 !important;
-                color: #fff !important;
-            }
-        </style>
-
-        <div style="display: flex; gap: 20px; margin-bottom: 20px;">
-            <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px; border-left: 4px solid #d63638;">
+        <div class="uxpa-flex-row">
+            <div class="card uxpa-stat-card uxpa-stat-card--danger">
                 <h3><?php esc_html_e( 'Total Blocked Attempts', 'uxpa-network-performance-guard' ); ?></h3>
-                <p style="font-size: 24px; font-weight: bold; margin: 10px 0; color: #d63638;">
+                <p class="uxpa-stat-value uxpa-stat-value--danger">
                     <?php echo esc_html( number_format_i18n( $blocked_count ) ); ?>
                 </p>
                 <p class="description"><?php esc_html_e( 'Cumulative harvesting attempts intercepted since reset.', 'uxpa-network-performance-guard' ); ?></p>
             </div>
-            <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+            <div class="card uxpa-stat-card">
                 <h3><?php esc_html_e( 'Blocked (Last 7 Days)', 'uxpa-network-performance-guard' ); ?></h3>
-                <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
+                <p class="uxpa-stat-value">
                     <?php echo esc_html( number_format_i18n( $seven_days_total ) ); ?>
                 </p>
                 <p class="description"><?php esc_html_e( 'Attack interceptions over the past week.', 'uxpa-network-performance-guard' ); ?></p>
             </div>
-            <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+            <div class="card uxpa-stat-card">
                 <h3><?php esc_html_e( 'Blocked (Last 30 Days)', 'uxpa-network-performance-guard' ); ?></h3>
-                <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
+                <p class="uxpa-stat-value">
                     <?php echo esc_html( number_format_i18n( $thirty_days_total ) ); ?>
                 </p>
                 <p class="description"><?php esc_html_e( 'Attack interceptions over the past 30 days.', 'uxpa-network-performance-guard' ); ?></p>
             </div>
         </div>
 
-        <div style="margin-bottom: 25px; display: flex; gap: 10px; align-items: center;">
+        <div class="uxpa-flex-row uxpa-flex-row--tight">
             <a href="<?php echo esc_url( $csv_export_url ); ?>" class="button button-primary"><?php esc_html_e( 'Download CSV Report', 'uxpa-network-performance-guard' ); ?></a>
             <?php if ( ! empty( $recent_logs ) ) : ?>
-                <form method="post" style="display: inline;">
+                <form method="post" class="uxpa-form-inline">
                     <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
                     <input type="submit" name="uxpa_guard_reset_logs" class="button button-secondary" value="<?php esc_attr_e( 'Clear Interception Logs & Counter', 'uxpa-network-performance-guard' ); ?>" />
                 </form>
@@ -837,17 +742,17 @@ class UxpaNetworkPerformanceGuard {
         </div>
 
         <!-- Section 1: Top Offending IPs -->
-        <div style="margin-bottom: 40px;">
-            <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px;"><?php esc_html_e( 'Top Offending IP Addresses', 'uxpa-network-performance-guard' ); ?></h3>
+        <div class="uxpa-section">
+            <h3 class="uxpa-section-title"><?php esc_html_e( 'Top Offending IP Addresses', 'uxpa-network-performance-guard' ); ?></h3>
             <table class="wp-list-table widefat fixed striped" id="uxpa-top-offenders-table">
                 <thead>
                     <tr>
-                        <th class="sortable" data-type="ip" style="width: 20%;"><?php esc_html_e( 'IP Address', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="sortable desc" data-type="number" style="width: 10%;"><?php esc_html_e( 'Hits Count', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="sortable" data-type="date" style="width: 20%;"><?php esc_html_e( 'First Intercepted', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="sortable" data-type="date" style="width: 20%;"><?php esc_html_e( 'Last Intercepted', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="sortable" data-type="string" style="width: 16%;"><?php esc_html_e( 'Block Status', 'uxpa-network-performance-guard' ); ?></th>
-                        <th style="width: 16%;"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable uxpa-col-w-20" data-type="ip"><?php esc_html_e( 'IP Address', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable desc uxpa-col-w-10" data-type="number"><?php esc_html_e( 'Hits Count', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable uxpa-col-w-20" data-type="date"><?php esc_html_e( 'First Intercepted', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable uxpa-col-w-20" data-type="date"><?php esc_html_e( 'Last Intercepted', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable uxpa-col-w-16" data-type="string"><?php esc_html_e( 'Block Status', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="uxpa-col-w-16"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -862,8 +767,8 @@ class UxpaNetworkPerformanceGuard {
                             <tr class="<?php echo esc_attr( $row_class ); ?>">
                                 <td>
                                     <code class="ip-address"><?php echo esc_html( $offender['ip'] ); ?></code>
-                                    <a href="<?php echo esc_url( 'https://abuseipdb.com/check/' . $offender['ip'] ); ?>" target="_blank" rel="noopener noreferrer" style="font-size: 10px; margin-left: 6px; text-decoration: none;" title="<?php esc_attr_e( 'Check IP reputation on AbuseIPDB', 'uxpa-network-performance-guard' ); ?>">
-                                        <span class="dashicons dashicons-external" style="font-size: 12px; width: 12px; height: 12px;"></span>
+                                    <a href="<?php echo esc_url( 'https://abuseipdb.com/check/' . $offender['ip'] ); ?>" target="_blank" rel="noopener noreferrer" class="uxpa-external-link" title="<?php esc_attr_e( 'Check IP reputation on AbuseIPDB', 'uxpa-network-performance-guard' ); ?>">
+                                        <span class="dashicons dashicons-external uxpa-external-icon"></span>
                                     </a>
                                 </td>
                                 <td><strong><?php echo esc_html( $offender['hits'] ); ?></strong></td>
@@ -884,19 +789,19 @@ class UxpaNetworkPerformanceGuard {
 
         <!-- Section 2: Recent Logs -->
         <div>
-            <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px;"><?php esc_html_e( 'Recent Intercepted Attempts (Last 50 Logs)', 'uxpa-network-performance-guard' ); ?></h3>
+            <h3 class="uxpa-section-title"><?php esc_html_e( 'Recent Intercepted Attempts (Last 50 Logs)', 'uxpa-network-performance-guard' ); ?></h3>
             <table class="wp-list-table widefat fixed striped" id="uxpa-recent-logs-table">
                 <thead>
                     <tr>
-                        <th class="sortable desc" data-type="date" style="width: 15%;"><?php esc_html_e( 'Time', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable desc uxpa-col-w-15" data-type="date"><?php esc_html_e( 'Time', 'uxpa-network-performance-guard' ); ?></th>
                         <?php if ( is_multisite() ) : ?>
-                            <th class="sortable" data-type="string" style="width: 12%;"><?php esc_html_e( 'Sub-Site', 'uxpa-network-performance-guard' ); ?></th>
+                            <th class="sortable uxpa-col-w-12" data-type="string"><?php esc_html_e( 'Sub-Site', 'uxpa-network-performance-guard' ); ?></th>
                         <?php endif; ?>
-                        <th class="sortable" data-type="ip" style="width: 15%;"><?php esc_html_e( 'IP Address', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="sortable" data-type="string" style="width: 12%;"><?php esc_html_e( 'Block Type', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="sortable" data-type="string" style="width: <?php echo is_multisite() ? '24%' : '36%'; ?>;"><?php esc_html_e( 'Target Query / Route', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="sortable" data-type="string" style="width: 12%;"><?php esc_html_e( 'Block Status', 'uxpa-network-performance-guard' ); ?></th>
-                        <th style="width: 14%;"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable uxpa-col-w-15" data-type="ip"><?php esc_html_e( 'IP Address', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable uxpa-col-w-12" data-type="string"><?php esc_html_e( 'Block Type', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable <?php echo is_multisite() ? 'uxpa-col-w-24' : 'uxpa-col-w-36'; ?>" data-type="string"><?php esc_html_e( 'Target Query / Route', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="sortable uxpa-col-w-12" data-type="string"><?php esc_html_e( 'Block Status', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="uxpa-col-w-14"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -921,12 +826,12 @@ class UxpaNetworkPerformanceGuard {
                                 <?php endif; ?>
                                 <td>
                                     <code class="ip-address"><?php echo esc_html( $entry['ip'] ); ?></code>
-                                    <a href="<?php echo esc_url( 'https://abuseipdb.com/check/' . $entry['ip'] ); ?>" target="_blank" rel="noopener noreferrer" style="font-size: 10px; margin-left: 6px; text-decoration: none;" title="<?php esc_attr_e( 'Check IP reputation on AbuseIPDB', 'uxpa-network-performance-guard' ); ?>">
-                                        <span class="dashicons dashicons-external" style="font-size: 12px; width: 12px; height: 12px;"></span>
+                                    <a href="<?php echo esc_url( 'https://abuseipdb.com/check/' . $entry['ip'] ); ?>" target="_blank" rel="noopener noreferrer" class="uxpa-external-link" title="<?php esc_attr_e( 'Check IP reputation on AbuseIPDB', 'uxpa-network-performance-guard' ); ?>">
+                                        <span class="dashicons dashicons-external uxpa-external-icon"></span>
                                     </a>
                                 </td>
                                 <td>
-                                    <span class="badge" style="background: #f0f0f1; border: 1px solid #c3c4c7; padding: 2px 6px; border-radius: 3px; font-size: 11px;">
+                                    <span class="badge uxpa-type-badge">
                                         <?php echo ( isset( $entry['type'] ) && $entry['type'] === 'rest' ) ? esc_html__( 'REST API', 'uxpa-network-performance-guard' ) : esc_html__( 'Query Parameter', 'uxpa-network-performance-guard' ); ?>
                                     </span>
                                 </td>
@@ -944,252 +849,6 @@ class UxpaNetworkPerformanceGuard {
             </table>
         </div>
 
-        <!-- Client-Side Sorter & AJAX Script -->
-        <script>
-        jQuery(document).ready(function($) {
-            // Localized Translation Strings
-            const txtBlockedAtEdge = <?php echo wp_json_encode( __( 'Blocked at Edge', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtBlockedAtHost = <?php echo wp_json_encode( __( 'Blocked at Web Host', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtLoggedActive    = <?php echo wp_json_encode( __( 'Logged (Active)', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtMarkEdgeBlock   = <?php echo wp_json_encode( __( 'Mark Edge Block', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtRemoveEdgeBlock = <?php echo wp_json_encode( __( 'Remove Edge Block', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtMarkHostBlock   = <?php echo wp_json_encode( __( 'Mark Host Block', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtRemoveHostBlock = <?php echo wp_json_encode( __( 'Remove Host Block', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtErrOccurred   = <?php echo wp_json_encode( __( 'An error occurred.', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtReqFailed     = <?php echo wp_json_encode( __( 'Request failed. Please try again.', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtCopied        = <?php echo wp_json_encode( __( 'Copied!', 'uxpa-network-performance-guard' ) ); ?>;
-            const txtCopyFail      = <?php echo wp_json_encode( __( 'Could not copy to clipboard. Please copy manually.', 'uxpa-network-performance-guard' ) ); ?>;
-
-            // Client-Side Sorting
-            $('th.sortable').on('click', function() {
-                const th = $(this);
-                const table = th.closest('table')[0];
-                const index = th.index();
-                const type = th.data('type') || 'string';
-                
-                // Determine direction
-                let asc = true;
-                if (th.hasClass('asc')) {
-                    asc = false;
-                }
-                
-                // Clear directions on other sibling headers of the same table
-                th.closest('tr').find('th').removeClass('asc desc');
-                
-                // Add direction class
-                th.addClass(asc ? 'asc' : 'desc');
-                
-                // Sort table rows
-                sortTable(table, index, type, asc);
-            });
-
-            function sortTable(table, columnIndex, type, asc) {
-                const tbody = table.querySelector('tbody');
-                const rows = Array.from(tbody.querySelectorAll('tr'));
-                
-                if (rows.length <= 1 && $(rows[0]).find('td').length <= 1) return;
-
-                rows.sort((a, b) => {
-                    let valA = a.cells[columnIndex] ? a.cells[columnIndex].innerText.trim() : '';
-                    let valB = b.cells[columnIndex] ? b.cells[columnIndex].innerText.trim() : '';
-
-                    // For IP sorting (with IPv6 fallback)
-                    if (type === 'ip') {
-                        const ipToNum = ip => {
-                            const clean = ip.replace(/[^0-9.]/g, '').split('.');
-                            if (clean.length !== 4) return null;
-                            return clean.reduce((acc, octet) => (acc * 256) + parseInt(octet, 10), 0);
-                        };
-                        const numA = ipToNum(valA);
-                        const numB = ipToNum(valB);
-                        if (numA === null || numB === null) {
-                            return asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-                        }
-                        return asc ? numA - numB : numB - numA;
-                    }
-
-                    // For numeric sorting
-                    if (type === 'number') {
-                        const numA = parseFloat(valA.replace(/[^0-9.-]/g, '')) || 0;
-                        const numB = parseFloat(valB.replace(/[^0-9.-]/g, '')) || 0;
-                        return asc ? numA - numB : numB - numA;
-                    }
-
-                    // For Date/Time sorting (standard Y-m-d H:i:s)
-                    if (type === 'date') {
-                        const dateA = new Date(valA.replace(/-/g, '/')).getTime() || 0;
-                        const dateB = new Date(valB.replace(/-/g, '/')).getTime() || 0;
-                        return asc ? dateA - dateB : dateB - dateA;
-                    }
-
-                    // Alphabetical
-                    return asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-                });
-
-                tbody.innerHTML = '';
-                rows.forEach(row => tbody.appendChild(row));
-            }
-
-            function handleBlockToggle(btn, action) {
-                const ip = btn.data('ip');
-                const nonce = $('#uxpa_guard_ajax_nonce').val();
-                const row = btn.closest('tr');
-
-                row.find('.block-actions .button').prop('disabled', true).addClass('updating');
-
-                $.post(ajaxurl, {
-                    action: action,
-                    ip: ip,
-                    nonce: nonce
-                }, function(response) {
-                    row.find('.block-actions .button').prop('disabled', false).removeClass('updating');
-                    if (response.success) {
-                        refreshBlockUI(response.data.edge_blocked_ips, response.data.webhost_blocked_ips);
-                    } else {
-                        alert(response.data.message || txtErrOccurred);
-                    }
-                }).fail(function() {
-                    row.find('.block-actions .button').prop('disabled', false).removeClass('updating');
-                    alert(txtReqFailed);
-                });
-            }
-
-            $(document).on('click', '.uxpa-toggle-cloudflare', function(e) {
-                e.preventDefault();
-                handleBlockToggle($(this), 'uxpa_toggle_cloudflare_blocked');
-            });
-
-            $(document).on('click', '.uxpa-toggle-webhost', function(e) {
-                e.preventDefault();
-                handleBlockToggle($(this), 'uxpa_toggle_webhost_blocked');
-            });
-
-            function buildStatusHtml(edgeBlocked, hostBlocked) {
-                if (!edgeBlocked && !hostBlocked) {
-                    return '<span class="badge cf-active-badge">' + txtLoggedActive + '</span>';
-                }
-
-                let html = '<div class="block-status-badges" style="display: flex; flex-direction: column; gap: 4px;">';
-                if (edgeBlocked) {
-                    html += '<span class="badge cf-blocked-badge">' + txtBlockedAtEdge + '</span>';
-                }
-                if (hostBlocked) {
-                    html += '<span class="badge host-blocked-badge">' + txtBlockedAtHost + '</span>';
-                }
-                html += '</div>';
-                return html;
-            }
-
-            function buildActionsHtml(ip, edgeBlocked, hostBlocked) {
-                const edgeBtnClass = edgeBlocked ? 'button button-secondary' : 'button button-primary-outline';
-                const edgeBtnText = edgeBlocked ? txtRemoveEdgeBlock : txtMarkEdgeBlock;
-                const hostBtnClass = hostBlocked ? 'button button-secondary' : 'button button-primary-outline';
-                const hostBtnText = hostBlocked ? txtRemoveHostBlock : txtMarkHostBlock;
-
-                return '<div class="block-actions" style="display: flex; flex-direction: column; gap: 4px;">' +
-                    '<button type="button" class="uxpa-toggle-cloudflare ' + edgeBtnClass + '" data-ip="' + ip + '">' + edgeBtnText + '</button>' +
-                    '<button type="button" class="uxpa-toggle-webhost ' + hostBtnClass + '" data-ip="' + ip + '">' + hostBtnText + '</button>' +
-                    '</div>';
-            }
-
-            function refreshBlockUI(edgeBlockedIps, hostBlockedIps) {
-                $('tr').each(function() {
-                    const row = $(this);
-                    if (!row.find('.block-status-cell').length) {
-                        return;
-                    }
-
-                    const ipCode = row.find('code.ip-address');
-                    if (!ipCode.length) {
-                        return;
-                    }
-
-                    const ip = ipCode.text().trim();
-                    const edgeBlocked = edgeBlockedIps.indexOf(ip) !== -1;
-                    const hostBlocked = hostBlockedIps.indexOf(ip) !== -1;
-
-                    row.find('.block-status-cell').html(buildStatusHtml(edgeBlocked, hostBlocked));
-                    row.find('td:has(.block-actions)').html(buildActionsHtml(ip, edgeBlocked, hostBlocked));
-
-                    if (edgeBlocked || hostBlocked) {
-                        row.addClass('row-ip-blocked');
-                    } else {
-                        row.removeClass('row-ip-blocked row-cf-blocked');
-                    }
-                });
-
-                updateCopyAssistant('cf', edgeBlockedIps);
-                updateCopyAssistant('host', hostBlockedIps);
-            }
-
-            function updateCopyAssistant(type, blockedIps) {
-                const prefix = type === 'host' ? 'host' : 'cf';
-                const textarea = $('#' + prefix + '-blocked-list-text');
-                const badge = $('#' + prefix + '-blocked-count-badge');
-                const emptyMsg = $('#' + prefix + '-empty-msg');
-                const copyBtn = $('#copy-' + prefix + '-list');
-
-                if (!textarea.length) {
-                    return;
-                }
-
-                textarea.val(blockedIps.join('\n'));
-                badge.text(blockedIps.length);
-
-                if (blockedIps.length === 0) {
-                    emptyMsg.show();
-                    textarea.hide();
-                    copyBtn.hide();
-                } else {
-                    emptyMsg.hide();
-                    textarea.show();
-                    // The button markup relies on flex centering; .show() would restore inline-block.
-                    copyBtn.css('display', 'flex');
-                }
-            }
-
-            // Copy to Clipboard Assistants
-            $(document).on('click', '#copy-cf-list, #copy-host-list', function() {
-                const listId = $(this).attr('id') === 'copy-host-list' ? 'host-blocked-list-text' : 'cf-blocked-list-text';
-                const textarea = document.getElementById(listId);
-                textarea.select();
-                textarea.setSelectionRange(0, 99999);
-
-                const triggerSuccessUI = () => {
-                    const copyBtn = $(this);
-                    const origHtml = copyBtn.html();
-                    copyBtn.html('<span class="dashicons dashicons-yes"></span> ' + txtCopied).addClass('button-success');
-                    setTimeout(() => {
-                        copyBtn.html(origHtml).removeClass('button-success');
-                    }, 2000);
-                };
-
-                const fallbackCopy = () => {
-                    try {
-                        document.execCommand('copy');
-                        triggerSuccessUI.call(this);
-                    } catch (err) {
-                        alert(txtCopyFail);
-                    }
-                };
-
-                const copyBtn = $(this);
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(textarea.value)
-                        .then(() => {
-                            const origHtml = copyBtn.html();
-                            copyBtn.html('<span class="dashicons dashicons-yes"></span> ' + txtCopied).addClass('button-success');
-                            setTimeout(() => {
-                                copyBtn.html(origHtml).removeClass('button-success');
-                            }, 2000);
-                        })
-                        .catch(fallbackCopy.bind(copyBtn));
-                } else {
-                    fallbackCopy.call(copyBtn[0]);
-                }
-            });
-        });
-        </script>
         <?php
     }
 
@@ -1291,7 +950,7 @@ class UxpaNetworkPerformanceGuard {
         ?>
 
         <?php if ( $this->is_network_active ) : ?>
-            <div style="margin-bottom: 20px; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+            <div class="uxpa-panel">
                 <form method="get" action="">
                     <input type="hidden" name="page" value="uxpa-performance-guard" />
                     <input type="hidden" name="tab" value="cron" />
@@ -1315,17 +974,17 @@ class UxpaNetworkPerformanceGuard {
             </div>
         <?php endif; ?>
 
-        <div style="display: flex; gap: 20px; margin-bottom: 20px;">
-            <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+        <div class="uxpa-flex-row">
+            <div class="card uxpa-stat-card">
                 <h3><?php esc_html_e( 'Cron Option Size', 'uxpa-network-performance-guard' ); ?></h3>
-                <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
+                <p class="uxpa-stat-value">
                     <?php echo esc_html( size_format( $cron_size, 2 ) ); ?>
                 </p>
                 <p class="description"><?php esc_html_e( 'Total serialized byte count of the cron option row.', 'uxpa-network-performance-guard' ); ?></p>
             </div>
-            <div class="card" style="flex: 1; min-width: 200px; margin-top: 0; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+            <div class="card uxpa-stat-card">
                 <h3><?php esc_html_e( 'Total Scheduled Events', 'uxpa-network-performance-guard' ); ?></h3>
-                <p style="font-size: 24px; font-weight: bold; margin: 10px 0;">
+                <p class="uxpa-stat-value">
                     <?php echo esc_html( $total_events ); ?>
                 </p>
                 <p class="description"><?php esc_html_e( 'Total number of events registered inside the scheduler queue.', 'uxpa-network-performance-guard' ); ?></p>
@@ -1333,11 +992,11 @@ class UxpaNetworkPerformanceGuard {
         </div>
 
         <h3><?php esc_html_e( 'Cron Option Composition (Top 5 Hooks)', 'uxpa-network-performance-guard' ); ?></h3>
-        <table class="wp-list-table widefat fixed striped" style="margin-bottom: 30px;">
+        <table class="wp-list-table widefat fixed striped uxpa-table-spaced">
             <thead>
                 <tr>
                     <th><?php esc_html_e( 'Hook Name', 'uxpa-network-performance-guard' ); ?></th>
-                    <th style="width: 25%;"><?php esc_html_e( 'Frequency Count', 'uxpa-network-performance-guard' ); ?></th>
+                    <th class="uxpa-col-w-25"><?php esc_html_e( 'Frequency Count', 'uxpa-network-performance-guard' ); ?></th>
                 </tr>
             </thead>
             <tbody>
@@ -1356,10 +1015,10 @@ class UxpaNetworkPerformanceGuard {
             </tbody>
         </table>
 
-        <div style="margin-bottom: 30px; background: #fff; border: 1px solid #c3c4c7; padding: 15px; border-radius: 4px;">
+        <div class="uxpa-panel uxpa-panel--spaced">
             <h3><?php esc_html_e( 'Action Scheduler Maintenance', 'uxpa-network-performance-guard' ); ?></h3>
-            <p class="description" style="margin-bottom: 15px;"><?php esc_html_e( 'The system automatically retains Action Scheduler action logs for 7 days (reduced from the default 30 days). You can force an immediate database queue cleanup below.', 'uxpa-network-performance-guard' ); ?></p>
-            <form method="post" style="display: inline;">
+            <p class="description"><?php esc_html_e( 'The system automatically retains Action Scheduler action logs for 7 days (reduced from the default 30 days). You can force an immediate database queue cleanup below.', 'uxpa-network-performance-guard' ); ?></p>
+            <form method="post" class="uxpa-form-inline">
                 <?php wp_nonce_field( 'uxpa_guard_settings_nonce' ); ?>
                 <input type="submit" name="uxpa_guard_purge_action_scheduler" class="button button-secondary" value="<?php esc_attr_e( 'Purge Old Action Logs Now', 'uxpa-network-performance-guard' ); ?>" />
             </form>
@@ -1389,85 +1048,85 @@ class UxpaNetworkPerformanceGuard {
     private function render_welcome_tab(): void {
         ?>
         <h2><?php esc_html_e( 'Welcome to UXPA Network Performance & Guard Suite', 'uxpa-network-performance-guard' ); ?></h2>
-        <p class="description" style="font-size: 14px; margin-bottom: 20px;">
+        <p class="description uxpa-intro">
             <?php esc_html_e( 'A lightweight, high-performance security and database optimization engine designed to protect site operations and maintain a clean scheduler backend.', 'uxpa-network-performance-guard' ); ?>
         </p>
 
-        <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; box-shadow: 0 1px 1px rgba(0,0,0,.04); margin-bottom: 30px;">
-            <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
-                <span class="dashicons dashicons-yes-alt" aria-hidden="true" style="color: #46b450; vertical-align: text-bottom; margin-right: 6px;"></span>
+        <div class="uxpa-feature-card">
+            <h3 class="uxpa-feature-heading">
+                <span class="dashicons dashicons-yes-alt uxpa-icon uxpa-icon--success" aria-hidden="true"></span>
                 <?php esc_html_e( 'Key Problems We Solve', 'uxpa-network-performance-guard' ); ?>
             </h3>
             
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 15px;">
+            <div class="uxpa-feature-grid">
                 <div>
-                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
-                        <span class="dashicons dashicons-shield" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                    <h4 class="uxpa-feature-title">
+                        <span class="dashicons dashicons-shield uxpa-icon uxpa-icon--accent" aria-hidden="true"></span>
                         <?php esc_html_e( 'Early-Exit Bot Firewall', 'uxpa-network-performance-guard' ); ?>
                     </h4>
-                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                    <p class="uxpa-feature-copy">
                         <?php echo wp_kses_post( __( 'Blocks malicious bot scans that list site usernames via <code>?author=N</code> query parameters or REST API requests, preventing credential harvesting before WordPress loads heavy database tasks.', 'uxpa-network-performance-guard' ) ); ?>
                     </p>
                 </div>
                 <div>
-                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
-                        <span class="dashicons dashicons-admin-plugins" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                    <h4 class="uxpa-feature-title">
+                        <span class="dashicons dashicons-admin-plugins uxpa-icon uxpa-icon--accent" aria-hidden="true"></span>
                         <?php esc_html_e( 'Cron Database Health & Pruning', 'uxpa-network-performance-guard' ); ?>
                     </h4>
-                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                    <p class="uxpa-feature-copy">
                         <?php esc_html_e( 'Automatically filters, cleans, and prevents cron option bloat from runaway duplicate scheduler queues or core transient issues.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                 </div>
                 <div>
-                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
-                        <span class="dashicons dashicons-chart-bar" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                    <h4 class="uxpa-feature-title">
+                        <span class="dashicons dashicons-chart-bar uxpa-icon uxpa-icon--accent" aria-hidden="true"></span>
                         <?php esc_html_e( 'Daily Interception Stat Tracking', 'uxpa-network-performance-guard' ); ?>
                     </h4>
-                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                    <p class="uxpa-feature-copy">
                         <?php esc_html_e( 'Actively logs intrusion attempt histories, recording IP addresses, sub-sites, block types, and target query parameters for transparent auditing.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                 </div>
                 <div>
-                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
-                        <span class="dashicons dashicons-email-alt" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                    <h4 class="uxpa-feature-title">
+                        <span class="dashicons dashicons-email-alt uxpa-icon uxpa-icon--accent" aria-hidden="true"></span>
                         <?php esc_html_e( 'Automated Email Reporting', 'uxpa-network-performance-guard' ); ?>
                     </h4>
-                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                    <p class="uxpa-feature-copy">
                         <?php esc_html_e( 'Dispatches regular email summaries of blocked security attempts and cron table health metrics to a validated, authorized administrator.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                 </div>
                 <div>
-                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
-                        <span class="dashicons dashicons-database-export" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                    <h4 class="uxpa-feature-title">
+                        <span class="dashicons dashicons-database-export uxpa-icon uxpa-icon--accent" aria-hidden="true"></span>
                         <?php esc_html_e( 'CSV Security Logs Export', 'uxpa-network-performance-guard' ); ?>
                     </h4>
-                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                    <p class="uxpa-feature-copy">
                         <?php esc_html_e( 'Enables downloading the entire blocked-attack log history as a formatted CSV file for external audit processing.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                 </div>
                 <div>
-                    <h4 style="margin: 0 0 6px 0; font-size: 14px;">
-                        <span class="dashicons dashicons-clock" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #2271b1;"></span>
+                    <h4 class="uxpa-feature-title">
+                        <span class="dashicons dashicons-clock uxpa-icon uxpa-icon--accent" aria-hidden="true"></span>
                         <?php esc_html_e( 'Action Scheduler Retention Control', 'uxpa-network-performance-guard' ); ?>
                     </h4>
-                    <p style="margin: 0; font-size: 13px; color: #646970;">
+                    <p class="uxpa-feature-copy">
                         <?php esc_html_e( 'Optimizes retention periods for action scheduler queues down to 7 days, and offers a single-click manual database pruning utility.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                 </div>
             </div>
         </div>
 
-        <div style="background: #f0f6fc; border-left: 4px solid #72aee6; padding: 25px; border-radius: 0 4px 4px 0; box-shadow: 0 1px 2px rgba(0,0,0,.05);">
-            <h3 style="margin-top: 0; font-size: 18px; color: #1d2327;">
-                <span class="dashicons dashicons-awards" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 6px; color: #135e96; font-size: 24px; width: 24px; height: 24px;"></span>
+        <div class="uxpa-promo">
+            <h3 class="uxpa-promo-heading">
+                <span class="dashicons dashicons-awards uxpa-promo-icon" aria-hidden="true"></span>
                 <?php esc_html_e( 'Need Custom WordPress Solutions & Optimization?', 'uxpa-network-performance-guard' ); ?>
             </h3>
-            <p style="font-size: 14px; line-height: 1.5; color: #2c3338; max-width: 800px; margin-bottom: 20px;">
+            <p class="uxpa-promo-copy">
                 <?php esc_html_e( 'This plugin was designed and developed by Greg Miller at Shrinkray Labs. We specialize in high-performance WordPress engineering, custom plugin development, backend dashboard automation, and security/database tuning.', 'uxpa-network-performance-guard' ); ?>
             </p>
-            <div style="margin: 0; display:flex;">
-                <a href="<?php echo esc_url( 'https://shrinkraylabs.com' ); ?>" target="_blank" rel="noopener noreferrer" class="button button-primary button-large" style="display: flex; justify-content: center; align-items: center;" aria-label="<?php esc_attr_e( 'Visit Shrinkray Labs (opens in a new tab)', 'uxpa-network-performance-guard' ); ?>">
-                    <span class="dashicons dashicons-external" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px; line-height: 1.3; margin-bottom: 0.4rem; margin-right: 0.2rem; color:white;"></span>
+            <div class="uxpa-promo-actions">
+                <a href="<?php echo esc_url( 'https://shrinkraylabs.com' ); ?>" target="_blank" rel="noopener noreferrer" class="button button-primary button-large uxpa-promo-button" aria-label="<?php esc_attr_e( 'Visit Shrinkray Labs (opens in a new tab)', 'uxpa-network-performance-guard' ); ?>">
+                    <span class="dashicons dashicons-external uxpa-promo-button-icon" aria-hidden="true"></span>
                     <?php esc_html_e( 'Visit Shrinkray Labs', 'uxpa-network-performance-guard' ); ?>
                 </a>
             </div>
@@ -1484,52 +1143,52 @@ class UxpaNetworkPerformanceGuard {
         switch ( $tab ) {
             case 'welcome':
                 ?>
-                <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
-                    <span class="dashicons dashicons-admin-settings" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px;"></span>
+                <h3 class="uxpa-sidebar-heading">
+                    <span class="dashicons dashicons-admin-settings uxpa-icon" aria-hidden="true"></span>
                     <?php esc_html_e( 'Plugin Metadata', 'uxpa-network-performance-guard' ); ?>
                 </h3>
-                <table class="wp-list-table widefat fixed striped" style="border: none; background: transparent; box-shadow: none; margin-top: 10px;">
+                <table class="wp-list-table widefat fixed striped uxpa-sidebar-meta">
                     <tbody>
                         <tr>
-                            <td style="padding: 6px 0; border: none;"><strong><?php esc_html_e( 'Version:', 'uxpa-network-performance-guard' ); ?></strong></td>
-                            <td style="padding: 6px 0; border: none; text-align: right;">
+                            <td><strong><?php esc_html_e( 'Version:', 'uxpa-network-performance-guard' ); ?></strong></td>
+                            <td class="is-right">
                                 <?php
                                 if ( ! function_exists( 'get_plugin_data' ) ) {
                                     require_once ABSPATH . 'wp-admin/includes/plugin.php';
                                 }
                                 $plugin_data = get_plugin_data( __FILE__ );
-                                echo esc_html( isset( $plugin_data['Version'] ) ? $plugin_data['Version'] : '1.4' );
+                                echo esc_html( isset( $plugin_data['Version'] ) ? $plugin_data['Version'] : '1.5' );
                                 ?>
                             </td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px 0; border: none;"><strong><?php esc_html_e( 'Developer:', 'uxpa-network-performance-guard' ); ?></strong></td>
-                            <td style="padding: 6px 0; border: none; text-align: right;"><a href="<?php echo esc_url( 'https://shrinkraylabs.com' ); ?>" target="_blank" rel="noopener noreferrer" aria-label="<?php esc_attr_e( 'Greg Miller (opens in a new tab)', 'uxpa-network-performance-guard' ); ?>"><?php esc_html_e( 'Greg Miller', 'uxpa-network-performance-guard' ); ?></a></td>
+                            <td><strong><?php esc_html_e( 'Developer:', 'uxpa-network-performance-guard' ); ?></strong></td>
+                            <td class="is-right"><a href="<?php echo esc_url( 'https://shrinkraylabs.com' ); ?>" target="_blank" rel="noopener noreferrer" aria-label="<?php esc_attr_e( 'Greg Miller (opens in a new tab)', 'uxpa-network-performance-guard' ); ?>"><?php esc_html_e( 'Greg Miller', 'uxpa-network-performance-guard' ); ?></a></td>
                         </tr>
                         <tr>
-                            <td style="padding: 6px 0; border: none;"><strong><?php esc_html_e( 'Organization:', 'uxpa-network-performance-guard' ); ?></strong></td>
-                            <td style="padding: 6px 0; border: none; text-align: right;"><?php esc_html_e( 'UXPA International', 'uxpa-network-performance-guard' ); ?></td>
+                            <td><strong><?php esc_html_e( 'Organization:', 'uxpa-network-performance-guard' ); ?></strong></td>
+                            <td class="is-right"><?php esc_html_e( 'UXPA International', 'uxpa-network-performance-guard' ); ?></td>
                         </tr>
                     </tbody>
                 </table>
-                <hr style="margin: 15px 0; border-top: 1px solid #eee;" />
-                <h4 style="margin: 0 0 10px 0; font-size: 14px;"><?php esc_html_e( 'Quick Shortcuts', 'uxpa-network-performance-guard' ); ?></h4>
-                <ul style="list-style: none; padding-left: 0; margin: 0; font-size: 13px;">
-                    <li style="margin-bottom: 8px;">
-                        <a href="<?php echo esc_url( add_query_arg( 'tab', 'dashboard', $base_url ) ); ?>" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
-                            <span class="dashicons dashicons-chart-bar" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px;"></span>
+                <hr class="uxpa-sidebar-divider" />
+                <h4 class="uxpa-sidebar-subheading"><?php esc_html_e( 'Quick Shortcuts', 'uxpa-network-performance-guard' ); ?></h4>
+                <ul class="uxpa-sidebar-list">
+                    <li>
+                        <a href="<?php echo esc_url( add_query_arg( 'tab', 'dashboard', $base_url ) ); ?>" class="uxpa-sidebar-link">
+                            <span class="dashicons dashicons-chart-bar uxpa-sidebar-link-icon" aria-hidden="true"></span>
                             <?php esc_html_e( 'Security Dashboard', 'uxpa-network-performance-guard' ); ?>
                         </a>
                     </li>
-                    <li style="margin-bottom: 8px;">
-                        <a href="<?php echo esc_url( add_query_arg( 'tab', 'security', $base_url ) ); ?>" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
-                            <span class="dashicons dashicons-shield" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px;"></span>
+                    <li>
+                        <a href="<?php echo esc_url( add_query_arg( 'tab', 'security', $base_url ) ); ?>" class="uxpa-sidebar-link">
+                            <span class="dashicons dashicons-shield uxpa-sidebar-link-icon" aria-hidden="true"></span>
                             <?php esc_html_e( 'Interception Settings', 'uxpa-network-performance-guard' ); ?>
                         </a>
                     </li>
-                    <li style="margin-bottom: 0;">
-                        <a href="<?php echo esc_url( add_query_arg( 'tab', 'cron', $base_url ) ); ?>" style="text-decoration: none; display: flex; align-items: center; gap: 6px;">
-                            <span class="dashicons dashicons-clock" aria-hidden="true" style="font-size: 16px; width: 16px; height: 16px;"></span>
+                    <li>
+                        <a href="<?php echo esc_url( add_query_arg( 'tab', 'cron', $base_url ) ); ?>" class="uxpa-sidebar-link">
+                            <span class="dashicons dashicons-clock uxpa-sidebar-link-icon" aria-hidden="true"></span>
                             <?php esc_html_e( 'Cron & Queue Health', 'uxpa-network-performance-guard' ); ?>
                         </a>
                     </li>
@@ -1543,72 +1202,72 @@ class UxpaNetworkPerformanceGuard {
                 $cf_ips_text = implode( "\n", $cf_blocked_ips );
                 $host_ips_text = implode( "\n", $host_blocked_ips );
                 ?>
-                <div class="cloudflare-assistant-card" style="margin-bottom: 25px; padding-bottom: 20px; border-bottom: 1px solid #eee;">
-                    <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px; color: #d63638;">
-                        <span class="dashicons dashicons-shield-alt" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #d63638;"></span>
+                <div class="cloudflare-assistant-card uxpa-assistant-card">
+                    <h3 class="uxpa-sidebar-heading uxpa-sidebar-heading--danger">
+                        <span class="dashicons dashicons-shield-alt uxpa-icon uxpa-icon--danger" aria-hidden="true"></span>
                         <?php esc_html_e( 'Edge Block Assistant', 'uxpa-network-performance-guard' ); ?>
                     </h3>
-                    <p style="font-size: 13px; line-height: 1.4; color: #50575e;">
+                    <p class="uxpa-assistant-copy">
                         <?php esc_html_e( 'Flag worst-offending IPs with "Mark Edge Block" to add them to this list. Copy and paste into Cloudflare WAF or your CDN firewall.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                     
-                    <div style="margin: 15px 0 10px 0;">
+                    <div class="uxpa-assistant-count">
                         <strong><?php esc_html_e( 'Edge-Blocked IPs:', 'uxpa-network-performance-guard' ); ?> 
-                            <span id="cf-blocked-count-badge" style="background: #d63638; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 5px;">
+                            <span id="cf-blocked-count-badge" class="uxpa-count-badge uxpa-count-badge--danger">
                                 <?php echo count( $cf_blocked_ips ); ?>
                             </span>
                         </strong>
                     </div>
 
-                    <p id="cf-empty-msg" style="font-style: italic; color: #8c8f94; font-size: 13px; display: <?php echo empty( $cf_blocked_ips ) ? 'block' : 'none'; ?>;">
+                    <p id="cf-empty-msg" class="uxpa-empty-msg<?php echo empty( $cf_blocked_ips ) ? '' : ' is-hidden'; ?>">
                         <?php esc_html_e( 'No edge blocks flagged yet. Click "Mark Edge Block" on an offending IP to populate.', 'uxpa-network-performance-guard' ); ?>
                     </p>
 
-                    <textarea id="cf-blocked-list-text" readonly style="width: 100%; height: 120px; font-family: monospace; font-size: 12px; line-height: 1.4; padding: 8px; background: #f6f7f7; border: 1px solid #8c8f94; border-radius: 4px; resize: none; box-sizing: border-box; display: <?php echo empty( $cf_blocked_ips ) ? 'none' : 'block'; ?>;"><?php echo esc_textarea( $cf_ips_text ); ?></textarea>
+                    <textarea id="cf-blocked-list-text" class="uxpa-ip-list<?php echo empty( $cf_blocked_ips ) ? ' is-hidden' : ''; ?>" readonly><?php echo esc_textarea( $cf_ips_text ); ?></textarea>
                     
-                    <button type="button" id="copy-cf-list" class="button button-secondary" style="width: 100%; margin-top: 10px; display: <?php echo empty( $cf_blocked_ips ) ? 'none' : 'flex'; ?>; justify-content: center; align-items: center; gap: 5px;">
-                        <span class="dashicons dashicons-admin-page" style="font-size: 16px; width: 16px; height: 16px; margin-top: 3px;"></span>
+                    <button type="button" id="copy-cf-list" class="button button-secondary uxpa-copy-button<?php echo empty( $cf_blocked_ips ) ? ' is-hidden' : ''; ?>">
+                        <span class="dashicons dashicons-admin-page"></span>
                         <?php esc_html_e( 'Copy Edge IP List', 'uxpa-network-performance-guard' ); ?>
                     </button>
                 </div>
 
-                <div class="webhost-assistant-card" style="margin-bottom: 25px; padding-bottom: 20px; border-bottom: 1px solid #eee;">
-                    <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px; color: #996800;">
-                        <span class="dashicons dashicons-admin-site-alt3" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px; color: #996800;"></span>
+                <div class="webhost-assistant-card uxpa-assistant-card">
+                    <h3 class="uxpa-sidebar-heading uxpa-sidebar-heading--host">
+                        <span class="dashicons dashicons-admin-site-alt3 uxpa-icon uxpa-icon--host" aria-hidden="true"></span>
                         <?php esc_html_e( 'Web Host Block Assistant', 'uxpa-network-performance-guard' ); ?>
                     </h3>
-                    <p style="font-size: 13px; line-height: 1.4; color: #50575e;">
+                    <p class="uxpa-assistant-copy">
                         <?php esc_html_e( 'If you block at the web host instead of (or in addition to) the edge, flag IPs with "Mark Host Block". Copy this list into WPEngine, cPanel, or your host firewall.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                     
-                    <div style="margin: 15px 0 10px 0;">
+                    <div class="uxpa-assistant-count">
                         <strong><?php esc_html_e( 'Host-Blocked IPs:', 'uxpa-network-performance-guard' ); ?> 
-                            <span id="host-blocked-count-badge" style="background: #996800; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 5px;">
+                            <span id="host-blocked-count-badge" class="uxpa-count-badge uxpa-count-badge--host">
                                 <?php echo count( $host_blocked_ips ); ?>
                             </span>
                         </strong>
                     </div>
 
-                    <p id="host-empty-msg" style="font-style: italic; color: #8c8f94; font-size: 13px; display: <?php echo empty( $host_blocked_ips ) ? 'block' : 'none'; ?>;">
+                    <p id="host-empty-msg" class="uxpa-empty-msg<?php echo empty( $host_blocked_ips ) ? '' : ' is-hidden'; ?>">
                         <?php esc_html_e( 'No host blocks flagged yet. Click "Mark Host Block" on an offending IP to populate.', 'uxpa-network-performance-guard' ); ?>
                     </p>
 
-                    <textarea id="host-blocked-list-text" readonly style="width: 100%; height: 120px; font-family: monospace; font-size: 12px; line-height: 1.4; padding: 8px; background: #f6f7f7; border: 1px solid #8c8f94; border-radius: 4px; resize: none; box-sizing: border-box; display: <?php echo empty( $host_blocked_ips ) ? 'none' : 'block'; ?>;"><?php echo esc_textarea( $host_ips_text ); ?></textarea>
+                    <textarea id="host-blocked-list-text" class="uxpa-ip-list<?php echo empty( $host_blocked_ips ) ? ' is-hidden' : ''; ?>" readonly><?php echo esc_textarea( $host_ips_text ); ?></textarea>
                     
-                    <button type="button" id="copy-host-list" class="button button-secondary" style="width: 100%; margin-top: 10px; display: <?php echo empty( $host_blocked_ips ) ? 'none' : 'flex'; ?>; justify-content: center; align-items: center; gap: 5px;">
-                        <span class="dashicons dashicons-admin-page" style="font-size: 16px; width: 16px; height: 16px; margin-top: 3px;"></span>
+                    <button type="button" id="copy-host-list" class="button button-secondary uxpa-copy-button<?php echo empty( $host_blocked_ips ) ? ' is-hidden' : ''; ?>">
+                        <span class="dashicons dashicons-admin-page"></span>
                         <?php esc_html_e( 'Copy Host IP List', 'uxpa-network-performance-guard' ); ?>
                     </button>
                 </div>
 
-                <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
-                    <span class="dashicons dashicons-chart-bar" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px;"></span>
+                <h3 class="uxpa-sidebar-heading">
+                    <span class="dashicons dashicons-chart-bar uxpa-icon" aria-hidden="true"></span>
                     <?php esc_html_e( 'Dashboard Guide', 'uxpa-network-performance-guard' ); ?>
                 </h3>
                 <p><strong><?php esc_html_e( 'Security Overview', 'uxpa-network-performance-guard' ); ?></strong></p>
                 <p><?php esc_html_e( 'The dashboard displays real-time statistics of blocked malicious requests attempting to harvest admin usernames. The logged data lists the timestamp, IP address, and target URI.', 'uxpa-network-performance-guard' ); ?></p>
                 <p><strong><?php esc_html_e( 'Actions:', 'uxpa-network-performance-guard' ); ?></strong></p>
-                <ul style="list-style-type: disc; padding-left: 20px; margin: 10px 0;">
+                <ul class="uxpa-guide-list">
                     <li><?php esc_html_e( 'Download a complete CSV report to audit IP addresses blocklists offline.', 'uxpa-network-performance-guard' ); ?></li>
                     <li><?php esc_html_e( 'Clear the logs and reset counter statistics as needed.', 'uxpa-network-performance-guard' ); ?></li>
                 </ul>
@@ -1617,8 +1276,8 @@ class UxpaNetworkPerformanceGuard {
 
             case 'security':
                 ?>
-                <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
-                    <span class="dashicons dashicons-shield" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px;"></span>
+                <h3 class="uxpa-sidebar-heading">
+                    <span class="dashicons dashicons-shield uxpa-icon" aria-hidden="true"></span>
                     <?php esc_html_e( 'Security Guide', 'uxpa-network-performance-guard' ); ?>
                 </h3>
                 <p><strong><?php esc_html_e( 'Bot Mitigation', 'uxpa-network-performance-guard' ); ?></strong></p>
@@ -1630,8 +1289,8 @@ class UxpaNetworkPerformanceGuard {
 
             case 'cron':
                 ?>
-                <h3 style="margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px;">
-                    <span class="dashicons dashicons-clock" aria-hidden="true" style="vertical-align: text-bottom; margin-right: 4px;"></span>
+                <h3 class="uxpa-sidebar-heading">
+                    <span class="dashicons dashicons-clock uxpa-icon" aria-hidden="true"></span>
                     <?php esc_html_e( 'Cron Health Guide', 'uxpa-network-performance-guard' ); ?>
                 </h3>
                 <p><strong><?php esc_html_e( 'Avoiding Bloat', 'uxpa-network-performance-guard' ); ?></strong></p>
@@ -1644,4 +1303,6 @@ class UxpaNetworkPerformanceGuard {
     }
 }
 
-new UxpaNetworkPerformanceGuard();
+$uxpa_network_performance_guard = new UxpaNetworkPerformanceGuard();
+register_activation_hook( __FILE__, [ $uxpa_network_performance_guard, 'activate' ] );
+register_deactivation_hook( __FILE__, [ $uxpa_network_performance_guard, 'deactivate' ] );
