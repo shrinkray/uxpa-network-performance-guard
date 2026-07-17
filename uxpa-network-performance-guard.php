@@ -283,7 +283,7 @@ class UxpaNetworkPerformanceGuard {
         }
 
         header( 'Content-Type: text/csv; charset=utf-8' );
-        header( 'Content-Disposition: attachment; filename="uxpa-security-intercept-report-' . date( 'Y-m-d' ) . '.csv"' );
+        header( 'Content-Disposition: attachment; filename="uxpa-security-intercept-report-' . date_i18n( 'Y-m-d' ) . '.csv"' );
         
         $output = fopen( 'php://output', 'w' );
         
@@ -301,7 +301,7 @@ class UxpaNetworkPerformanceGuard {
 
             foreach ( $logs as $entry ) {
                 $row = [
-                    date( 'Y-m-d H:i:s', $entry['timestamp'] ),
+                    date_i18n( 'Y-m-d H:i:s', $entry['timestamp'] ),
                     $entry['ip'],
                     $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter',
                     $entry['target']
@@ -486,7 +486,7 @@ class UxpaNetworkPerformanceGuard {
             
             $display_logs = array_slice( $logs, 0, 15 );
             foreach ( $display_logs as $entry ) {
-                $time = date( 'Y-m-d H:i:s', $entry['timestamp'] );
+                $time = date_i18n( 'Y-m-d H:i:s', $entry['timestamp'] );
                 $ip = esc_html( $entry['ip'] );
                 $type = $entry['type'] === 'rest' ? 'REST API' : 'Query Parameter';
                 $target = esc_html( $entry['target'] );
