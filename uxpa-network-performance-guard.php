@@ -752,7 +752,7 @@ class UxpaNetworkPerformanceGuard {
                         <th class="sortable uxpa-col-w-20" data-type="date"><?php esc_html_e( 'First Intercepted', 'uxpa-network-performance-guard' ); ?></th>
                         <th class="sortable uxpa-col-w-20" data-type="date"><?php esc_html_e( 'Last Intercepted', 'uxpa-network-performance-guard' ); ?></th>
                         <th class="sortable uxpa-col-w-16" data-type="string"><?php esc_html_e( 'Block Status', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="uxpa-col-w-16"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="uxpa-col-w-16"><?php esc_html_e( 'Blocked', 'uxpa-network-performance-guard' ); ?></th>
                     </tr>
                 </thead>
                 <tbody>
