@@ -203,7 +203,7 @@ th.sortable.desc::after {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 4px;
+    gap: 6px;
     min-height: 30px;
     padding: 0 8px !important;
     line-height: 1.2;
@@ -218,8 +218,51 @@ th.sortable.desc::after {
 }
 
 .block-actions .uxpa-block-label {
+    margin-left: 2px;
     font-size: 12px;
     font-weight: 500;
+}
+
+.block-actions .uxpa-block-icon--add,
+.block-actions .uxpa-block-icon--add .dashicons,
+.block-actions .uxpa-block-icon--add .uxpa-block-label {
+    color: #00a32a !important;
+}
+
+.block-actions .uxpa-block-icon--add.button-primary-outline {
+    border-color: #00a32a !important;
+}
+
+.block-actions .uxpa-block-icon--add.button-primary-outline:hover {
+    background: #00a32a !important;
+    border-color: #00a32a !important;
+    color: #fff !important;
+}
+
+.block-actions .uxpa-block-icon--add.button-primary-outline:hover .dashicons,
+.block-actions .uxpa-block-icon--add.button-primary-outline:hover .uxpa-block-label {
+    color: #fff !important;
+}
+
+.block-actions .uxpa-block-icon--clear,
+.block-actions .uxpa-block-icon--clear .dashicons,
+.block-actions .uxpa-block-icon--clear .uxpa-block-label {
+    color: #d63638 !important;
+}
+
+.block-actions .uxpa-block-icon--clear.button-secondary {
+    border-color: #d63638 !important;
+}
+
+.block-actions .uxpa-block-icon--clear.button-secondary:hover {
+    background: #d63638 !important;
+    border-color: #d63638 !important;
+    color: #fff !important;
+}
+
+.block-actions .uxpa-block-icon--clear.button-secondary:hover .dashicons,
+.block-actions .uxpa-block-icon--clear.button-secondary:hover .uxpa-block-label {
+    color: #fff !important;
 }
 
 .button-primary-outline {
