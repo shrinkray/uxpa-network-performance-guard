@@ -113,9 +113,9 @@ class UxpaNetworkPerformanceGuard {
                     'blockedAtEdge'   => __( 'Blocked at Edge', 'uxpa-network-performance-guard' ),
                     'blockedAtHost'   => __( 'Blocked at Web Host', 'uxpa-network-performance-guard' ),
                     'loggedActive'    => __( 'Logged (Active)', 'uxpa-network-performance-guard' ),
-                    'markEdgeBlock'   => __( 'Edge', 'uxpa-network-performance-guard' ),
+                    'markEdgeBlock'   => __( 'Block at edge', 'uxpa-network-performance-guard' ),
                     'removeEdgeBlock' => __( 'Clear edge block', 'uxpa-network-performance-guard' ),
-                    'markHostBlock'   => __( 'Host', 'uxpa-network-performance-guard' ),
+                    'markHostBlock'   => __( 'Block at host', 'uxpa-network-performance-guard' ),
                     'removeHostBlock' => __( 'Clear host block', 'uxpa-network-performance-guard' ),
                     'errorOccurred'   => __( 'An error occurred.', 'uxpa-network-performance-guard' ),
                     'requestFailed'   => __( 'Request failed. Please try again.', 'uxpa-network-performance-guard' ),
@@ -410,19 +410,20 @@ class UxpaNetworkPerformanceGuard {
         $is_edge_blocked = in_array( $ip, $edge_ips, true );
         $is_host_blocked = in_array( $ip, $host_ips, true );
 
-        $clear_icon = '<span class="dashicons dashicons-no-alt" aria-hidden="true"></span>';
+        $add_icon   = '<span class="dashicons dashicons-plus-alt" aria-hidden="true"></span>';
+        $clear_icon = '<span class="dashicons dashicons-dismiss" aria-hidden="true"></span>';
 
-        $edge_btn_class = $is_edge_blocked ? 'button button-secondary uxpa-block-clear' : 'button button-primary-outline';
+        $edge_btn_class = $is_edge_blocked ? 'button button-secondary uxpa-block-icon' : 'button button-primary-outline uxpa-block-icon';
         $edge_btn_label = $is_edge_blocked
             ? __( 'Clear edge block', 'uxpa-network-performance-guard' )
-            : __( 'Edge', 'uxpa-network-performance-guard' );
-        $edge_btn_html  = $is_edge_blocked ? $clear_icon : esc_html( $edge_btn_label );
+            : __( 'Block at edge', 'uxpa-network-performance-guard' );
+        $edge_btn_html  = $is_edge_blocked ? $clear_icon : $add_icon;
 
-        $host_btn_class = $is_host_blocked ? 'button button-secondary uxpa-block-clear' : 'button button-primary-outline';
+        $host_btn_class = $is_host_blocked ? 'button button-secondary uxpa-block-icon' : 'button button-primary-outline uxpa-block-icon';
         $host_btn_label = $is_host_blocked
             ? __( 'Clear host block', 'uxpa-network-performance-guard' )
-            : __( 'Host', 'uxpa-network-performance-guard' );
-        $host_btn_html  = $is_host_blocked ? $clear_icon : esc_html( $host_btn_label );
+            : __( 'Block at host', 'uxpa-network-performance-guard' );
+        $host_btn_html  = $is_host_blocked ? $clear_icon : $add_icon;
 
         return sprintf(
             '<div class="block-actions">
@@ -1214,7 +1215,7 @@ class UxpaNetworkPerformanceGuard {
                         <?php esc_html_e( 'Edge Block Assistant', 'uxpa-network-performance-guard' ); ?>
                     </h3>
                     <p class="uxpa-assistant-copy">
-                        <?php esc_html_e( 'Flag worst-offending IPs with "Edge" to add them to this list. Copy and paste into Cloudflare WAF or your CDN firewall.', 'uxpa-network-performance-guard' ); ?>
+                        <?php esc_html_e( 'Use the + button on a top-offending IP to flag it for the edge. Copy and paste into Cloudflare WAF or your CDN firewall.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                     
                     <div class="uxpa-assistant-count">
@@ -1226,7 +1227,7 @@ class UxpaNetworkPerformanceGuard {
                     </div>
 
                     <p id="cf-empty-msg" class="uxpa-empty-msg<?php echo empty( $cf_blocked_ips ) ? '' : ' is-hidden'; ?>">
-                        <?php esc_html_e( 'No edge blocks flagged yet. Click "Edge" on an offending IP to populate.', 'uxpa-network-performance-guard' ); ?>
+                        <?php esc_html_e( 'No edge blocks flagged yet. Click + on an offending IP to populate.', 'uxpa-network-performance-guard' ); ?>
                     </p>
 
                     <textarea id="cf-blocked-list-text" class="uxpa-ip-list<?php echo empty( $cf_blocked_ips ) ? ' is-hidden' : ''; ?>" readonly><?php echo esc_textarea( $cf_ips_text ); ?></textarea>
@@ -1243,7 +1244,7 @@ class UxpaNetworkPerformanceGuard {
                         <?php esc_html_e( 'Web Host Block Assistant', 'uxpa-network-performance-guard' ); ?>
                     </h3>
                     <p class="uxpa-assistant-copy">
-                        <?php esc_html_e( 'If you block at the web host instead of (or in addition to) the edge, flag IPs with "Host". Copy this list into WPEngine, cPanel, or your host firewall.', 'uxpa-network-performance-guard' ); ?>
+                        <?php esc_html_e( 'If you block at the web host instead of (or in addition to) the edge, use the lower + button on an IP. Copy this list into WPEngine, cPanel, or your host firewall.', 'uxpa-network-performance-guard' ); ?>
                     </p>
                     
                     <div class="uxpa-assistant-count">
@@ -1255,7 +1256,7 @@ class UxpaNetworkPerformanceGuard {
                     </div>
 
                     <p id="host-empty-msg" class="uxpa-empty-msg<?php echo empty( $host_blocked_ips ) ? '' : ' is-hidden'; ?>">
-                        <?php esc_html_e( 'No host blocks flagged yet. Click "Host" on an offending IP to populate.', 'uxpa-network-performance-guard' ); ?>
+                        <?php esc_html_e( 'No host blocks flagged yet. Click the host + on an offending IP to populate.', 'uxpa-network-performance-guard' ); ?>
                     </p>
 
                     <textarea id="host-blocked-list-text" class="uxpa-ip-list<?php echo empty( $host_blocked_ips ) ? ' is-hidden' : ''; ?>" readonly><?php echo esc_textarea( $host_ips_text ); ?></textarea>

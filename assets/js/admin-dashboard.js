@@ -71,13 +71,14 @@
     }
 
     function buildActionsHtml(ip, edgeBlocked, hostBlocked) {
-        const clearIcon = '<span class="dashicons dashicons-no-alt" aria-hidden="true"></span>';
-        const edgeBtnClass = edgeBlocked ? "button button-secondary uxpa-block-clear" : "button button-primary-outline";
+        const addIcon = '<span class="dashicons dashicons-plus-alt" aria-hidden="true"></span>';
+        const clearIcon = '<span class="dashicons dashicons-dismiss" aria-hidden="true"></span>';
+        const edgeBtnClass = edgeBlocked ? "button button-secondary uxpa-block-icon" : "button button-primary-outline uxpa-block-icon";
         const edgeBtnLabel = escapeHtml(edgeBlocked ? i18n.removeEdgeBlock : i18n.markEdgeBlock);
-        const edgeBtnHtml = edgeBlocked ? clearIcon : edgeBtnLabel;
-        const hostBtnClass = hostBlocked ? "button button-secondary uxpa-block-clear" : "button button-primary-outline";
+        const edgeBtnHtml = edgeBlocked ? clearIcon : addIcon;
+        const hostBtnClass = hostBlocked ? "button button-secondary uxpa-block-icon" : "button button-primary-outline uxpa-block-icon";
         const hostBtnLabel = escapeHtml(hostBlocked ? i18n.removeHostBlock : i18n.markHostBlock);
-        const hostBtnHtml = hostBlocked ? clearIcon : hostBtnLabel;
+        const hostBtnHtml = hostBlocked ? clearIcon : addIcon;
         const escapedIp = escapeHtml(ip);
 
         return '<div class="block-actions">' +
