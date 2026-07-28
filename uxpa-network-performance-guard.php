@@ -801,7 +801,7 @@ class UxpaNetworkPerformanceGuard {
                         <th class="sortable uxpa-col-w-12" data-type="string"><?php esc_html_e( 'Block Type', 'uxpa-network-performance-guard' ); ?></th>
                         <th class="sortable <?php echo is_multisite() ? 'uxpa-col-w-24' : 'uxpa-col-w-36'; ?>" data-type="string"><?php esc_html_e( 'Target Query / Route', 'uxpa-network-performance-guard' ); ?></th>
                         <th class="sortable uxpa-col-w-12" data-type="string"><?php esc_html_e( 'Block Status', 'uxpa-network-performance-guard' ); ?></th>
-                        <th class="uxpa-col-w-14"><?php esc_html_e( 'Actions', 'uxpa-network-performance-guard' ); ?></th>
+                        <th class="uxpa-col-w-14"><?php esc_html_e( 'Blocked', 'uxpa-network-performance-guard' ); ?></th>
                     </tr>
                 </thead>
                 <tbody>
