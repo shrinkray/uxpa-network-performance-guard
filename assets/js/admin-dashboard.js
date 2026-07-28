@@ -71,14 +71,18 @@
     }
 
     function buildActionsHtml(ip, edgeBlocked, hostBlocked) {
-        const addIcon = '<span class="dashicons dashicons-plus-alt" aria-hidden="true"></span>';
-        const clearIcon = '<span class="dashicons dashicons-dismiss" aria-hidden="true"></span>';
+        const addIcon = '<span class="dashicons dashicons-plus" aria-hidden="true"></span>';
+        const clearIcon = '<span class="dashicons dashicons-no" aria-hidden="true"></span>';
         const edgeLabel = escapeHtml(i18n.edgeLabel || "Edge");
         const hostLabel = escapeHtml(i18n.hostLabel || "Host");
-        const edgeBtnClass = edgeBlocked ? "button button-secondary uxpa-block-icon" : "button button-primary-outline uxpa-block-icon";
+        const edgeBtnClass = edgeBlocked
+            ? "button button-secondary uxpa-block-icon uxpa-block-icon--clear"
+            : "button button-primary-outline uxpa-block-icon uxpa-block-icon--add";
         const edgeBtnAria = escapeHtml(edgeBlocked ? i18n.removeEdgeBlock : i18n.markEdgeBlock);
         const edgeBtnHtml = (edgeBlocked ? clearIcon : addIcon) + '<span class="uxpa-block-label">' + edgeLabel + "</span>";
-        const hostBtnClass = hostBlocked ? "button button-secondary uxpa-block-icon" : "button button-primary-outline uxpa-block-icon";
+        const hostBtnClass = hostBlocked
+            ? "button button-secondary uxpa-block-icon uxpa-block-icon--clear"
+            : "button button-primary-outline uxpa-block-icon uxpa-block-icon--add";
         const hostBtnAria = escapeHtml(hostBlocked ? i18n.removeHostBlock : i18n.markHostBlock);
         const hostBtnHtml = (hostBlocked ? clearIcon : addIcon) + '<span class="uxpa-block-label">' + hostLabel + "</span>";
         const escapedIp = escapeHtml(ip);

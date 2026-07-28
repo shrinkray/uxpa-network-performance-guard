@@ -6,7 +6,7 @@ All notable changes to the **UXPA Network Performance & Guard** plugin will be d
 
 ### Changed
 - Shortened dashboard block-action column headings from "Actions" to "Block".
-- Replaced edge/host toggle button text with compact Dashicons (`plus-alt` to add, `dismiss` to clear) followed by Edge/Host labels, with accessible tooltips for each action.
+- Replaced edge/host toggle button text with colored Dashicons (`plus` in green to add, `no` in red to clear) followed by Edge/Host labels, with accessible tooltips for each action.
 
 ## [1.5] - 2026-07-16
 
