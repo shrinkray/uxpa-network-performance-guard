@@ -73,17 +73,19 @@
     function buildActionsHtml(ip, edgeBlocked, hostBlocked) {
         const addIcon = '<span class="dashicons dashicons-plus-alt" aria-hidden="true"></span>';
         const clearIcon = '<span class="dashicons dashicons-dismiss" aria-hidden="true"></span>';
+        const edgeLabel = escapeHtml(i18n.edgeLabel || "Edge");
+        const hostLabel = escapeHtml(i18n.hostLabel || "Host");
         const edgeBtnClass = edgeBlocked ? "button button-secondary uxpa-block-icon" : "button button-primary-outline uxpa-block-icon";
-        const edgeBtnLabel = escapeHtml(edgeBlocked ? i18n.removeEdgeBlock : i18n.markEdgeBlock);
-        const edgeBtnHtml = edgeBlocked ? clearIcon : addIcon;
+        const edgeBtnAria = escapeHtml(edgeBlocked ? i18n.removeEdgeBlock : i18n.markEdgeBlock);
+        const edgeBtnHtml = (edgeBlocked ? clearIcon : addIcon) + '<span class="uxpa-block-label">' + edgeLabel + "</span>";
         const hostBtnClass = hostBlocked ? "button button-secondary uxpa-block-icon" : "button button-primary-outline uxpa-block-icon";
-        const hostBtnLabel = escapeHtml(hostBlocked ? i18n.removeHostBlock : i18n.markHostBlock);
-        const hostBtnHtml = hostBlocked ? clearIcon : addIcon;
+        const hostBtnAria = escapeHtml(hostBlocked ? i18n.removeHostBlock : i18n.markHostBlock);
+        const hostBtnHtml = (hostBlocked ? clearIcon : addIcon) + '<span class="uxpa-block-label">' + hostLabel + "</span>";
         const escapedIp = escapeHtml(ip);
 
         return '<div class="block-actions">' +
-            '<button type="button" class="uxpa-toggle-cloudflare ' + edgeBtnClass + '" data-ip="' + escapedIp + '" aria-label="' + edgeBtnLabel + '" title="' + edgeBtnLabel + '">' + edgeBtnHtml + "</button>" +
-            '<button type="button" class="uxpa-toggle-webhost ' + hostBtnClass + '" data-ip="' + escapedIp + '" aria-label="' + hostBtnLabel + '" title="' + hostBtnLabel + '">' + hostBtnHtml + "</button>" +
+            '<button type="button" class="uxpa-toggle-cloudflare ' + edgeBtnClass + '" data-ip="' + escapedIp + '" aria-label="' + edgeBtnAria + '" title="' + edgeBtnAria + '">' + edgeBtnHtml + "</button>" +
+            '<button type="button" class="uxpa-toggle-webhost ' + hostBtnClass + '" data-ip="' + escapedIp + '" aria-label="' + hostBtnAria + '" title="' + hostBtnAria + '">' + hostBtnHtml + "</button>" +
             "</div>";
     }
 
