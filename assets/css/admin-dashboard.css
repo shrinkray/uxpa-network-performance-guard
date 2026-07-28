@@ -203,9 +203,11 @@ th.sortable.desc::after {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 4px;
     min-height: 30px;
     padding: 0 8px !important;
-    line-height: 1;
+    line-height: 1.2;
+    white-space: nowrap;
 }
 
 .block-actions .uxpa-block-icon .dashicons {
@@ -213,6 +215,11 @@ th.sortable.desc::after {
     width: 16px;
     height: 16px;
     margin: 0;
+}
+
+.block-actions .uxpa-block-label {
+    font-size: 12px;
+    font-weight: 500;
 }
 
 .button-primary-outline {
