@@ -134,6 +134,17 @@ class UxpaNetworkPerformanceGuard {
         }
     }
 
+    /**
+     * Current plugin version from the file header (for admin display).
+     */
+    private function get_plugin_version(): string {
+        if ( ! function_exists( 'get_plugin_data' ) ) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        $plugin_data = get_plugin_data( __FILE__, false, false );
+        return isset( $plugin_data['Version'] ) ? (string) $plugin_data['Version'] : '1.5.1';
+    }
+
     private function update_guard_option( string $key, $value ): void {
         if ( $this->is_network_active ) {
             update_site_option( $key, $value );
@@ -651,7 +662,10 @@ class UxpaNetworkPerformanceGuard {
         $base_url = add_query_arg( [ 'page' => 'uxpa-performance-guard' ], $base_url );
         ?>
         <div class="wrap">
-            <h1><?php esc_html_e( 'UXPA Network Performance & Guard', 'uxpa-network-performance-guard' ); ?></h1>
+            <h1>
+                <?php esc_html_e( 'UXPA Network Performance & Guard', 'uxpa-network-performance-guard' ); ?>
+                <span class="uxpa-plugin-version"><?php echo esc_html( 'v' . $this->get_plugin_version() ); ?></span>
+            </h1>
             <p class="description"><?php esc_html_e( 'Lightweight diagnostics and controls to block bots and prevent WP-Cron option bloat.', 'uxpa-network-performance-guard' ); ?></p>
 
             <h2 class="nav-tab-wrapper">
@@ -1159,13 +1173,7 @@ class UxpaNetworkPerformanceGuard {
                         <tr>
                             <td><strong><?php esc_html_e( 'Version:', 'uxpa-network-performance-guard' ); ?></strong></td>
                             <td class="is-right">
-                                <?php
-                                if ( ! function_exists( 'get_plugin_data' ) ) {
-                                    require_once ABSPATH . 'wp-admin/includes/plugin.php';
-                                }
-                                $plugin_data = get_plugin_data( __FILE__ );
-                                echo esc_html( isset( $plugin_data['Version'] ) ? $plugin_data['Version'] : '1.5.1' );
-                                ?>
+                                <?php echo esc_html( $this->get_plugin_version() ); ?>
                             </td>
                         </tr>
                         <tr>
