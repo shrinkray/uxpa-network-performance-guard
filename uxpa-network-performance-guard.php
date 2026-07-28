@@ -423,17 +423,21 @@ class UxpaNetworkPerformanceGuard {
         $is_edge_blocked = in_array( $ip, $edge_ips, true );
         $is_host_blocked = in_array( $ip, $host_ips, true );
 
-        $add_icon   = '<span class="dashicons dashicons-plus-alt" aria-hidden="true"></span>';
-        $clear_icon = '<span class="dashicons dashicons-dismiss" aria-hidden="true"></span>';
+        $add_icon   = '<span class="dashicons dashicons-plus" aria-hidden="true"></span>';
+        $clear_icon = '<span class="dashicons dashicons-no" aria-hidden="true"></span>';
 
-        $edge_btn_class = $is_edge_blocked ? 'button button-secondary uxpa-block-icon' : 'button button-primary-outline uxpa-block-icon';
+        $edge_btn_class = $is_edge_blocked
+            ? 'button button-secondary uxpa-block-icon uxpa-block-icon--clear'
+            : 'button button-primary-outline uxpa-block-icon uxpa-block-icon--add';
         $edge_btn_label = $is_edge_blocked
             ? __( 'Clear edge block', 'uxpa-network-performance-guard' )
             : __( 'Block at edge', 'uxpa-network-performance-guard' );
         $edge_btn_html  = ( $is_edge_blocked ? $clear_icon : $add_icon )
             . '<span class="uxpa-block-label">' . esc_html__( 'Edge', 'uxpa-network-performance-guard' ) . '</span>';
 
-        $host_btn_class = $is_host_blocked ? 'button button-secondary uxpa-block-icon' : 'button button-primary-outline uxpa-block-icon';
+        $host_btn_class = $is_host_blocked
+            ? 'button button-secondary uxpa-block-icon uxpa-block-icon--clear'
+            : 'button button-primary-outline uxpa-block-icon uxpa-block-icon--add';
         $host_btn_label = $is_host_blocked
             ? __( 'Clear host block', 'uxpa-network-performance-guard' )
             : __( 'Block at host', 'uxpa-network-performance-guard' );
