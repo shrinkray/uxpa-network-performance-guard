@@ -6,18 +6,6 @@
     align-items: flex-start;
 }
 
-.uxpa-plugin-version {
-    margin-left: 8px;
-    padding: 2px 8px;
-    border-radius: 3px;
-    background: #f0f0f1;
-    border: 1px solid #c3c4c7;
-    color: #50575e;
-    font-size: 12px;
-    font-weight: 600;
-    vertical-align: middle;
-}
-
 .uxpa-settings-main {
     flex: 3;
     min-width: 0;

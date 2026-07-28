@@ -662,10 +662,7 @@ class UxpaNetworkPerformanceGuard {
         $base_url = add_query_arg( [ 'page' => 'uxpa-performance-guard' ], $base_url );
         ?>
         <div class="wrap">
-            <h1>
-                <?php esc_html_e( 'UXPA Network Performance & Guard', 'uxpa-network-performance-guard' ); ?>
-                <span class="uxpa-plugin-version"><?php echo esc_html( 'v' . $this->get_plugin_version() ); ?></span>
-            </h1>
+            <h1><?php esc_html_e( 'UXPA Network Performance & Guard', 'uxpa-network-performance-guard' ); ?></h1>
             <p class="description"><?php esc_html_e( 'Lightweight diagnostics and controls to block bots and prevent WP-Cron option bloat.', 'uxpa-network-performance-guard' ); ?></p>
 
             <h2 class="nav-tab-wrapper">
