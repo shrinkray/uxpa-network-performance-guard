@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UXPA Network Performance & Guard
  * Description: Intercepts user enumeration attempts early and prevents cron option data pollution.
- * Version: 1.5
+ * Version: 1.5.1
  * Author: Greg Miller for UXPA International
  * Author URI: https://shrinkraylabs.com
  * Text Domain: uxpa-network-performance-guard
@@ -1164,7 +1164,7 @@ class UxpaNetworkPerformanceGuard {
                                     require_once ABSPATH . 'wp-admin/includes/plugin.php';
                                 }
                                 $plugin_data = get_plugin_data( __FILE__ );
-                                echo esc_html( isset( $plugin_data['Version'] ) ? $plugin_data['Version'] : '1.5' );
+                                echo esc_html( isset( $plugin_data['Version'] ) ? $plugin_data['Version'] : '1.5.1' );
                                 ?>
                             </td>
                         </tr>
