@@ -199,6 +199,22 @@ th.sortable.desc::after {
     text-align: center;
 }
 
+.block-actions .uxpa-block-clear {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 0 8px !important;
+    line-height: 1;
+}
+
+.block-actions .uxpa-block-clear .dashicons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+}
+
 .button-primary-outline {
     background: transparent !important;
     border-color: #2271b1 !important;

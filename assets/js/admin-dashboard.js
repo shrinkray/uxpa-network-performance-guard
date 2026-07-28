@@ -71,15 +71,18 @@
     }
 
     function buildActionsHtml(ip, edgeBlocked, hostBlocked) {
-        const edgeBtnClass = edgeBlocked ? "button button-secondary" : "button button-primary-outline";
-        const edgeBtnText = escapeHtml(edgeBlocked ? i18n.removeEdgeBlock : i18n.markEdgeBlock);
-        const hostBtnClass = hostBlocked ? "button button-secondary" : "button button-primary-outline";
-        const hostBtnText = escapeHtml(hostBlocked ? i18n.removeHostBlock : i18n.markHostBlock);
+        const clearIcon = '<span class="dashicons dashicons-no-alt" aria-hidden="true"></span>';
+        const edgeBtnClass = edgeBlocked ? "button button-secondary uxpa-block-clear" : "button button-primary-outline";
+        const edgeBtnLabel = escapeHtml(edgeBlocked ? i18n.removeEdgeBlock : i18n.markEdgeBlock);
+        const edgeBtnHtml = edgeBlocked ? clearIcon : edgeBtnLabel;
+        const hostBtnClass = hostBlocked ? "button button-secondary uxpa-block-clear" : "button button-primary-outline";
+        const hostBtnLabel = escapeHtml(hostBlocked ? i18n.removeHostBlock : i18n.markHostBlock);
+        const hostBtnHtml = hostBlocked ? clearIcon : hostBtnLabel;
         const escapedIp = escapeHtml(ip);
 
         return '<div class="block-actions">' +
-            '<button type="button" class="uxpa-toggle-cloudflare ' + edgeBtnClass + '" data-ip="' + escapedIp + '">' + edgeBtnText + "</button>" +
-            '<button type="button" class="uxpa-toggle-webhost ' + hostBtnClass + '" data-ip="' + escapedIp + '">' + hostBtnText + "</button>" +
+            '<button type="button" class="uxpa-toggle-cloudflare ' + edgeBtnClass + '" data-ip="' + escapedIp + '" aria-label="' + edgeBtnLabel + '" title="' + edgeBtnLabel + '">' + edgeBtnHtml + "</button>" +
+            '<button type="button" class="uxpa-toggle-webhost ' + hostBtnClass + '" data-ip="' + escapedIp + '" aria-label="' + hostBtnLabel + '" title="' + hostBtnLabel + '">' + hostBtnHtml + "</button>" +
             "</div>";
     }
 
