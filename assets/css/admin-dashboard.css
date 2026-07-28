@@ -199,6 +199,22 @@ th.sortable.desc::after {
     text-align: center;
 }
 
+.block-actions .uxpa-block-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 0 8px !important;
+    line-height: 1;
+}
+
+.block-actions .uxpa-block-icon .dashicons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+}
+
 .button-primary-outline {
     background: transparent !important;
     border-color: #2271b1 !important;
@@ -372,7 +388,7 @@ th.sortable.desc::after {
 }
 
 .uxpa-sidebar-meta td {
-    padding: 6px 0;
+    padding: 6px;
     border: none;
 }
 
